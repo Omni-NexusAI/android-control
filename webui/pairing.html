@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Android Control - ADB Pairing</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px}
+.dc-pairing-container{min-height:85vh;padding:16px;max-width:480px;margin:0 auto}
+.dc-section{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:14px;margin-bottom:14px}
+.dc-section-title{color:#e94560;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #2a2a4e}
+.dc-input{width:100%;padding:8px 10px;background:#0a0a1a;border:1px solid #0f3460;border-radius:6px;color:#e0e0e0;font-size:13px;font-family:inherit;outline:none;margin-bottom:8px}
+.dc-input:focus{border-color:#e94560}
+.dc-input::placeholder{color:#555}
+.dc-btn{padding:8px 16px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+.dc-btn-primary{background:#0f3460;color:#e0e0e0}
+.dc-btn-primary:hover{background:#1a4a80}
+.dc-btn-danger{background:#e94560;color:#fff}
+.dc-btn-danger:hover{background:#c13050}
+.dc-btn-sm{padding:5px 10px;font-size:11px}
+.dc-btn-row{display:flex;gap:8px;margin-top:8px}
+.dc-note{color:#555;font-size:11px;margin-top:8px;font-style:italic;line-height:1.4}
+.dc-status{margin-top:8px;padding:8px 10px;border-radius:6px;font-size:12px;display:none}
+.dc-status.ok{display:block;background:rgba(46,204,113,.12);color:#2ecc71;border:1px solid rgba(46,204,113,.25)}
+.dc-status.err{display:block;background:rgba(233,69,96,.12);color:#e94560;border:1px solid rgba(233,69,96,.25)}
+.dc-status.info{display:block;background:rgba(15,52,96,.3);color:#8ab4f8;border:1px solid rgba(15,52,96,.5)}
+.dc-label{color:#888;font-size:11px;margin-bottom:3px;display:block}
+.dc-device-list{max-height:220px;overflow-y:auto}
+.dc-device-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#0a0a1a;border-radius:6px;margin-bottom:6px;border:1px solid #2a2a4e}
+.dc-device-info{flex:1;min-width:0}
+.dc-device-serial{color:#e0e0e0;font-weight:600;font-size:12px}
+.dc-device-detail{color:#888;font-size:11px;margin-top:2px}
+.dc-empty{color:#555;text-align:center;padding:20px;font-size:12px}
+.dc-input-row{display:flex;gap:8px}
+.dc-input-row .dc-input{flex:1}
+.dc-input-row .dc-input:last-child{max-width:120px}
+.dc-qr-active #qr-start-btn{display:none}
+.dc-qr-active #qr-stop-btn{display:inline-block!important}
+.dc-qr-img{max-width:200px;border-radius:8px;display:inline-block;background:#fff}
+.dc-qr-info{margin-top:8px;font-size:11px;color:#888;line-height:1.5}
+.dc-qr-creds{margin-top:6px;padding:6px 10px;background:#0a0a1a;border-radius:6px;font-family:monospace;font-size:12px;color:#2ecc71;word-break:break-all}
+</style>
+<script src="/plugins/droidclaw/webui/qrcode.js"></script>
+</head>
+<body>
+<div class="dc-pairing-container">
+
+
+  <!-- Section 1: QR Code Pairing -->
+  <div class="dc-section" id="qr-section">
+    <div class="dc-section-title">QR Code Pairing</div>
+    <p class="dc-note" style="margin-bottom:10px">On your phone: Settings &gt; Developer Options &gt; Wireless Debugging &gt; Pair device with QR code. Scan the code below.</p>
+    <div class="dc-btn-row" id="qr-controls">
+      <button class="dc-btn dc-btn-primary" id="qr-start-btn" onclick="window.dcStartQRPairing()">Generate QR Code</button>
+      <button class="dc-btn dc-btn-danger dc-btn-sm" id="qr-stop-btn" onclick="window.dcStopQRPairing()" style="display:none">Clear</button>
+    </div>
+    <div id="qr-display" style="display:none;text-align:center;margin-top:12px">
+      <canvas id="qr-canvas" width="240" height="240" style="background:#fff;border-radius:8px;display:inline-block"></canvas>
+      <div class="dc-qr-creds" id="qr-creds"></div>
+      <div class="dc-qr-info" id="qr-ips"></div>
+      <div id="qr-server-status" style="display:none;margin-top:8px;padding:8px 10px;border-radius:6px;background:rgba(15,52,96,0.3);color:#8ab4f8;border:1px solid rgba(15,52,96,0.5);font-size:11px;text-align:left"></div>
+    </div>
+    <div class="dc-status" id="qr-status"></div>
+  </div>
+
+  <!-- Section 2: Manual Pairing -->
+  <div class="dc-section">
+    <div class="dc-section-title">Manual Pairing</div>
+    <label class="dc-label">IP Address</label>
+    <input type="text" class="dc-input" id="pair-ip" placeholder="192.168.1.100">
+    <div class="dc-input-row">
+      <div style="flex:1">
+        <label class="dc-label">Pairing Port</label>
+        <input type="text" class="dc-input" id="pair-port" placeholder="37425">
+      </div>
+      <div style="flex:1">
+        <label class="dc-label">6-Digit Code</label>
+        <input type="text" class="dc-input" id="pair-code" placeholder="123456" maxlength="6">
+      </div>
+    </div>
+    <div class="dc-btn-row">
+      <button class="dc-btn dc-btn-primary" onclick="window.dcPairDevice()">Pair Device</button>
+    </div>
+    <div class="dc-status" id="pair-status"></div>
+    <div class="dc-note">On your phone: Settings &gt; Developer Options &gt; Wireless Debugging &gt; Pair device with pairing code</div>
+  </div>
+
+  <!-- Section 3: Connect to Paired Device -->
+  <div class="dc-section">
+    <div class="dc-section-title">Connect to Paired Device</div>
+    <label class="dc-label">IP Address</label>
+    <input type="text" class="dc-input" id="conn-ip" placeholder="192.168.1.100">
+    <div class="dc-input-row">
+      <div style="flex:1">
+        <label class="dc-label">Port</label>
+        <input type="text" class="dc-input" id="conn-port" placeholder="5555" value="5555">
+      </div>
+      <div style="flex:0 0 auto;align-self:flex-end">
+        <button class="dc-btn dc-btn-primary" onclick="window.dcConnect()">Connect</button>
+      </div>
+    </div>
+    <div class="dc-status" id="conn-status"></div>
+  </div>
+
+  <!-- Section 4: Connected Devices -->
+  <div class="dc-section">
+    <div class="dc-section-title">Connected Devices</div>
+    <div class="dc-device-list" id="device-list">
+      <div class="dc-empty">No devices connected</div>
+    </div>
+    <div class="dc-btn-row">
+      <button class="dc-btn dc-btn-primary" onclick="window.dcRefreshDevices()">Refresh</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function() {
+
+
+  // ===================================================================
+  // API helper
+  // ===================================================================
+  var _csrfToken = null;
+  var _csrfTokenPromise = null;
+
+  function getCsrfToken() {
+    if (_csrfToken) return Promise.resolve(_csrfToken);
+    if (_csrfTokenPromise) return _csrfTokenPromise;
+
+    _csrfTokenPromise = fetch('/api/csrf_token', {
+      credentials: 'same-origin'
+    }).then(function(r) {
+      return r.json();
+    }).then(function(res) {
+      if (!res.ok || !res.token) {
+        throw new Error(res.error || 'Failed to get CSRF token');
+      }
+      _csrfToken = res.token;
+      if (res.runtime_id) {
+        document.cookie = 'csrf_token_' + res.runtime_id + '=' + res.token + '; SameSite=Lax; Path=/';
+      }
+      return _csrfToken;
+    }).finally(function() {
+      _csrfTokenPromise = null;
+    });
+
+    return _csrfTokenPromise;
+  }
+
+  function apiCall(body) {
+    return getCsrfToken().then(function(token) {
+      return fetch('/api/plugins/droidclaw/pairing', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': token
+        },
+        body: JSON.stringify(body)
+      });
+    }).then(function(r) { return r.json(); });
+  }
+
+  function setStatus(elId, msg, type) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    el.textContent = msg;
+    el.className = 'dc-status ' + type;
+  }
+
+  // ===================================================================
+  // Manual Pairing
+  // ===================================================================
+  window.dcPairDevice = function() {
+    var ip = document.getElementById('pair-ip').value.trim();
+    var port = document.getElementById('pair-port').value.trim();
+    var code = document.getElementById('pair-code').value.trim();
+
+    if (!ip || !port || !code) {
+      setStatus('pair-status', 'All fields are required', 'err');
+      return;
+    }
+
+    setStatus('pair-status', 'Pairing...', 'info');
+
+    apiCall({action: 'pair', ip: ip, port: port, code: code})
+      .then(function(res) {
+        if (res.success) {
+          setStatus('pair-status', 'Paired successfully!', 'ok');
+          document.getElementById('conn-ip').value = ip;
+        } else {
+          setStatus('pair-status', 'Pairing failed: ' + (res.error || 'Unknown error'), 'err');
+        }
+      })
+      .catch(function(e) {
+        setStatus('pair-status', 'Connection error: ' + e.message, 'err');
+      });
+  };
+
+  // ===================================================================
+  // Connect to Device
+  // ===================================================================
+  window.dcConnect = function() {
+    var ip = document.getElementById('conn-ip').value.trim();
+    var port = document.getElementById('conn-port').value.trim() || '5555';
+
+    if (!ip) {
+      setStatus('conn-status', 'IP address is required', 'err');
+      return;
+    }
+
+    setStatus('conn-status', 'Connecting...', 'info');
+
+    apiCall({action: 'connect', ip: ip, port: port})
+      .then(function(res) {
+        if (res.success) {
+          setStatus('conn-status', 'Connected to ' + ip + ':' + port, 'ok');
+          setTimeout(function() { window.dcRefreshDevices(); }, 500);
+        } else {
+          setStatus('conn-status', 'Connection failed: ' + (res.error || 'Unknown error'), 'err');
+        }
+      })
+      .catch(function(e) {
+        setStatus('conn-status', 'Connection error: ' + e.message, 'err');
+      });
+  };
+
+  // ===================================================================
+  // Connected Devices
+  // ===================================================================
+  window.dcRefreshDevices = function() {
+    apiCall({action: 'status'})
+      .then(function(res) {
+        var list = document.getElementById('device-list');
+        if (!res.devices || res.devices.length === 0) {
+          list.innerHTML = '<div class="dc-empty">No devices connected</div>';
+          return;
+        }
+        var html = '';
+        for (var i = 0; i < res.devices.length; i++) {
+          var d = res.devices[i];
+          html += '<div class="dc-device-item">';
+          html += '<div class="dc-device-info">';
+          html += '<div class="dc-device-serial">' + escHtml(d.serial || d.address || 'unknown') + '</div>';
+          html += '<div class="dc-device-detail">' + escHtml(d.state || 'device');
+          if (d.model) html += ' &bull; ' + escHtml(d.model);
+          html += '</div></div>';
+          html += '<button class="dc-btn dc-btn-danger dc-btn-sm" onclick="window.dcDisconnect(\'' + escAttr(d.serial || d.address) + '\')">Disconnect</button>';
+          html += '</div>';
+        }
+        list.innerHTML = html;
+      })
+      .catch(function(e) {
+        document.getElementById('device-list').innerHTML =
+          '<div class="dc-empty">Error loading devices: ' + escHtml(e.message) + '</div>';
+      });
+  };
+
+  window.dcDisconnect = function(serial) {
+    apiCall({action: 'disconnect', serial: serial})
+      .then(function(res) {
+        window.dcRefreshDevices();
+      })
+      .catch(function(e) {
+        window.dcRefreshDevices();
+      });
+  };
+
+  function escHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function escAttr(s) {
+    return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  }
+
+  // ===================================================================
+    // ===================================================================
+  var _qrPollTimer = null;
+
+
+  // ===================================================================
+  // QR Code Pairing with Server Status
+  // ===================================================================
+  window.dcStartQRPairing = function() {
+    setStatus('qr-status', 'Preparing QR pairing workflow...', 'info');
+    apiCall({action: 'start_qr_pairing'})
+      .then(function(res) {
+        if (res.success) {
+          document.getElementById('qr-display').style.display = 'block';
+          document.getElementById('qr-controls').classList.add('dc-qr-active');
+          // Draw QR on canvas using qrcode-generator library
+          var qr = qrcode(0, 'M');
+          qr.addData(res.qr_content);
+          qr.make();
+          var canvas = document.getElementById('qr-canvas');
+          var ctx = canvas.getContext('2d');
+          var modules = qr.getModuleCount();
+          var cellSize = Math.floor(canvas.width / modules);
+          var offset = Math.floor((canvas.width - cellSize * modules) / 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#000000';
+          for (var r = 0; r < modules; r++) {
+            for (var c = 0; c < modules; c++) {
+              if (qr.isDark(r, c)) {
+                ctx.fillRect(offset + c * cellSize, offset + r * cellSize, cellSize, cellSize);
+              }
+            }
+          }
+          // Show credentials
+          var creds = 'Service: ' + escHtml(res.service_name) + '  |  Password: ' + escHtml(res.password);
+          document.getElementById('qr-creds').textContent = creds;
+          document.getElementById('qr-ips').textContent = 'ADB backend: ' + (res.adb_backend || 'auto');
+          setStatus('qr-status', 'Scan the QR code. Android Control will discover, pair, and connect to the phone.', 'ok');
+          // Start polling for pairing status
+          startPairingPoll();
+        } else {
+          setStatus('qr-status', 'Failed: ' + (res.message || 'Unknown error'), 'err');
+        }
+      })
+      .catch(function(e) {
+        setStatus('qr-status', 'Error: ' + e.message, 'err');
+      });
+  };
+
+  function startPairingPoll() {
+    stopPairingPoll();
+    var statusEl = document.getElementById('qr-server-status');
+    if (statusEl) statusEl.style.display = 'block';
+
+    _qrPollTimer = setInterval(function() {
+      apiCall({action: 'pairing_status'}).then(function(res) {
+        if (!res.success) return;
+        var statusEl = document.getElementById('qr-server-status');
+        if (!statusEl) return;
+
+        if (res.running) {
+          var remaining = Math.max(0, Math.round(res.remaining || ((res.timeout || 90) - (res.elapsed || 0))));
+          statusEl.textContent = formatQrPhase(res) + ' ADB backend: ' + (res.adb_backend || 'auto') + '. ' + remaining + 's remaining';
+          statusEl.style.display = 'block';
+        } else if (res.result) {
+          // Server finished
+          stopPairingPoll();
+          if (res.result === 'connected') {
+            statusEl.textContent = 'Connected: ' + escHtml(res.device_serial || res.connect_addr || 'device');
+            statusEl.style.background = 'rgba(46,204,113,0.12)';
+            statusEl.style.color = '#2ecc71';
+            statusEl.style.borderColor = 'rgba(46,204,113,0.25)';
+            setStatus('qr-status', 'Phone paired and connected.', 'ok');
+          } else if (res.result === 'timeout') {
+            statusEl.textContent = 'Timed out: ' + escHtml(res.message || 'Phone pairing service was not discovered.');
+            statusEl.style.background = 'rgba(233,69,96,0.12)';
+            statusEl.style.color = '#e94560';
+            statusEl.style.borderColor = 'rgba(233,69,96,0.25)';
+            setStatus('qr-status', 'Pairing timed out. Android Control could not see the phone Wireless ADB service from the selected ADB backend.', 'err');
+          } else {
+            statusEl.textContent = 'Pairing failed: ' + escHtml(res.message || res.result);
+            statusEl.style.background = 'rgba(233,69,96,0.12)';
+            statusEl.style.color = '#e94560';
+            statusEl.style.borderColor = 'rgba(233,69,96,0.25)';
+            setStatus('qr-status', 'Pairing failed: ' + (res.message || res.result), 'err');
+          }
+          // Refresh device list to show newly paired device
+          window.dcRefreshDevices();
+        }
+      }).catch(function() {});
+    }, 2000);
+  }
+
+  function formatQrPhase(res) {
+    if (res.phase === 'waiting_for_scan') {
+      return 'Waiting for the phone Wireless ADB pairing service...';
+    }
+    if (res.phase === 'pairing') {
+      return 'Found phone; pairing with ADB...';
+    }
+    if (res.phase === 'connecting') {
+      return 'Paired; connecting to phone...';
+    }
+    return res.message || 'Pairing in progress...';
+  }
+
+  function stopPairingPoll() {
+    if (_qrPollTimer) {
+      clearInterval(_qrPollTimer);
+      _qrPollTimer = null;
+    }
+  }
+
+  window.dcStopQRPairing = function() {
+    stopPairingPoll();
+    apiCall({action: 'stop_qr_pairing'})
+      .then(function(res) {
+        document.getElementById('qr-display').style.display = 'none';
+        document.getElementById('qr-controls').classList.remove('dc-qr-active');
+        var canvas = document.getElementById('qr-canvas');
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        document.getElementById('qr-creds').textContent = '';
+        document.getElementById('qr-ips').textContent = '';
+        var statusEl = document.getElementById('qr-server-status');
+        if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
+        setStatus('qr-status', res.success ? 'QR pairing stopped.' : 'Error: ' + (res.message || ''), res.success ? 'info' : 'err');
+      })
+      .catch(function(e) {
+        stopPairingPoll();
+        setStatus('qr-status', 'Error: ' + e.message, 'err');
+      });
+  };
+
+  // ===================================================================
+  // Init: load devices
+  // ===================================================================
+  window.dcRefreshDevices();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+<div x-data>
+  <button
+    x-move-after="#btn-attach"
+    class="toolbar-btn"
+    id="btn-droidclaw"
+    @click="openModal('../plugins/droidclaw/webui/device-panel.html?dc=' + Date.now())"
+    title="Android Control Panel"
+    style="background:transparent !important;border:none;padding:4px;font-size:20px;color:var(--text-secondary,#888)">
+    <span class="material-symbols-outlined" style="font-size:20px">phone_android</span>
+  </button>
+</div>

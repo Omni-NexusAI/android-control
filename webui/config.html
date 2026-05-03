@@ -1,0 +1,387 @@
+<div x-data>
+  <template x-if="config">
+    <div>
+      <div class="section-title">Android Control</div>
+      <div class="section-description">
+        Android device control via ADB with LLM-guided navigation and workflow automation.
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Provider</div>
+          <div class="field-description">LLM provider for Tier 1 execution</div>
+        </div>
+        <div class="field-control">
+          <select x-model="config.provider">
+            <option value="ollama">Ollama</option>
+            <option value="lm_studio">LMStudio</option>
+            <option value="groq">Groq (cloud)</option>
+            <option value="openrouter">OpenRouter (cloud)</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="llama_cpp">llama.cpp Server</option>
+            <option value="other">Other (OpenAI Compatible)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Model</div>
+          <div class="field-description">Model identifier. Click search to browse installed/available models.</div>
+        </div>
+        <div class="field-control" style="position:relative;"
+             x-data="{ results: [], open: false, searching: false,
+               doSearch() {
+                 this.searching = true;
+                 const prov = config.provider || 'ollama';
+                 const base = config.api_base || '';
+                 if (typeof $store !== 'undefined' && $store.modelConfig) {
+                   $store.modelConfig.searchModels(prov, config.default_model, 'chat', base).then(r => { this.results = r; this.open = true; }).finally(() => this.searching = false);
+                 } else {
+                   this.searching = false;
+                 }
+               },
+               grouped() {
+                 const q = (config.default_model || '').trim().toLowerCase();
+                 if (!q) return { matched: [], rest: this.results };
+                 const matched = [], rest = [];
+                 for (const m of this.results) {
+                   if (m.toLowerCase().includes(q)) matched.push(m);
+                   else rest.push(m);
+                 }
+                 return { matched, rest };
+               }
+             }"
+             @click.outside="open = false">
+          <input type="text" x-model="config.default_model" style="padding-right:32px;"
+                 @keydown.enter.prevent="doSearch()"
+                 placeholder="e.g. qwen3.5-35b-a3b, llama-3.3-70b-versatile" />
+          <span class="dc-model-search-btn"
+                @click="if (!searching) doSearch()"
+                title="Search available models">
+            <span class="material-symbols-outlined" :style="searching && 'opacity:0'">search</span>
+            <span class="material-symbols-outlined dc-search-spinner" :style="!searching && 'opacity:0'">progress_activity</span>
+          </span>
+          <div class="dc-model-results" x-show="open && results.length > 0" x-transition.opacity>
+            <template x-for="m in grouped().matched" :key="'m_'+m">
+              <div class="dc-model-item matched" @click="config.default_model = m; open = false;" x-text="m"></div>
+            </template>
+            <div class="dc-model-separator" x-show="grouped().matched.length > 0 && grouped().rest.length > 0"></div>
+            <template x-for="m in grouped().rest" :key="'r_'+m">
+              <div class="dc-model-item" @click="config.default_model = m; open = false;" x-text="m"></div>
+            </template>
+          </div>
+          <div class="dc-model-results" x-show="open && results.length === 0 && !searching">
+            <div class="dc-model-item disabled">No models found</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Supports Vision</div>
+          <div class="field-description">Whether the configured model can accept image inputs</div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.model_supports_vision" x-init="if (config.model_supports_vision === undefined) config.model_supports_vision = true">
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">API Base URL</div>
+          <div class="field-description">Custom endpoint URL. Leave empty for provider default (e.g. http://192.168.1.100:11434 for remote Ollama)</div>
+        </div>
+        <div class="field-control">
+          <input type="text" x-model="config.api_base" placeholder="http://localhost:11434">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">API Key</div>
+          <div class="field-description">Required for llama.cpp, Groq, OpenRouter, OpenAI. Leave empty for LMStudio/Ollama.</div>
+        </div>
+        <div class="field-control">
+          <input type="password" x-model="config.api_key" placeholder="sk-... or leave empty">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Vision Mode</div>
+          <div class="field-description">When to use vision capabilities</div>
+        </div>
+        <div class="field-control">
+          <select x-model="config.vision_mode">
+            <option value="off">Off</option>
+            <option value="fallback">Fallback</option>
+            <option value="always">Always</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Default Tier</div>
+          <div class="field-description">Execution tier for Android Control tasks</div>
+        </div>
+        <div class="field-control">
+          <select x-model="config.tier">
+            <option value="auto">Auto (agent decides)</option>
+            <option value="tier1">Tier 1 (Local Model)</option>
+            <option value="tier2">Tier 2 (A0 Direct)</option>
+            <option value="tier3">Tier 3 (Workflow Only)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Max Steps</div>
+          <div class="field-description">Maximum steps for Tier 1 execution</div>
+        </div>
+        <div class="field-control">
+          <input type="number" x-model.number="config.max_steps" min="1" max="99">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Stuck Threshold</div>
+          <div class="field-description">Steps without progress before A0 intervention</div>
+        </div>
+        <div class="field-control">
+          <input type="number" x-model.number="config.stuck_threshold" min="1" max="10">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Step Delay</div>
+          <div class="field-description">Seconds between steps in Tier 1</div>
+        </div>
+        <div class="field-control">
+          <input type="number" x-model.number="config.step_delay" min="0" max="10">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Max Elements</div>
+          <div class="field-description">Maximum UI elements to parse</div>
+        </div>
+        <div class="field-control">
+          <input type="number" x-model.number="config.max_elements" min="10" max="100">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">ADB Device</div>
+          <div class="field-description">Default target device. Auto is recommended unless you need to pin one connected device.</div>
+        </div>
+        <div class="field-control"
+             x-data="{ devices: [], loading: false, error: '',
+               csrf() {
+                 return fetch('/api/csrf_token', {credentials: 'same-origin'})
+                   .then(r => r.json())
+                   .then(d => d.token || '');
+               },
+               refresh() {
+                 this.loading = true;
+                 this.error = '';
+                 this.csrf().then(token => fetch('/api/plugins/droidclaw/pairing', {
+                   method: 'POST',
+                   credentials: 'same-origin',
+                   headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token},
+                   body: JSON.stringify({action: 'status'})
+                 })).then(r => r.json()).then(d => {
+                   this.devices = d.devices || [];
+                 }).catch(e => {
+                   this.error = e.message || 'Device refresh failed';
+                 }).finally(() => {
+                   this.loading = false;
+                 });
+               },
+               currentKnown() {
+                 if (!config.device) return true;
+                 return this.devices.some(d => d.serial === config.device || (d.aliases || []).indexOf(config.device) >= 0);
+               },
+               label(d) {
+                 return (d.model || d.serial) + ' (' + d.serial + ')';
+               }
+             }"
+             x-init="refresh()">
+          <div style="display:flex; gap:6px; align-items:center;">
+            <select x-model="config.device" style="flex:1;">
+              <option value="">Auto</option>
+              <template x-if="config.device && !currentKnown()">
+                <option :value="config.device" x-text="config.device + ' (unavailable)'"></option>
+              </template>
+              <template x-for="d in devices" :key="d.serial">
+                <option :value="d.serial" x-text="label(d)"></option>
+              </template>
+            </select>
+            <button type="button" class="btn btn-field" @click="refresh()" :disabled="loading" title="Refresh devices">
+              <span x-show="!loading">Refresh</span>
+              <span x-show="loading">Loading...</span>
+            </button>
+          </div>
+          <div x-show="error" x-text="error" style="font-size:0.75rem; color:#e94560; margin-top:4px;"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Auto-Intervene</div>
+          <div class="field-description">A0 monitors Tier 1 and intervenes when stuck</div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.auto_intervene">
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section-title" style="margin-top: 20px;">Pairing & Connection</div>
+      <div class="section-description">
+        Wirelessly pair and connect Android devices via ADB.
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Quick Pair</div>
+          <div class="field-description">Open the wireless pairing wizard to pair a new device</div>
+        </div>
+        <div class="field-control">
+          <button class="btn btn-field" @click="openModal('/plugins/droidclaw/webui/pairing.html')">
+            Open Pairing Wizard
+          </button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Device Status</div>
+          <div class="field-description">Check current ADB device connections</div>
+        </div>
+        <div class="field-control" x-data="{ devices: [], loading: false, refresh() { this.loading = true; fetch('/api/plugins/droidclaw/pairing', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action: 'status'}) }).then(r => r.json()).then(d => { this.devices = d.devices || []; this.loading = false; }).catch(() => { this.loading = false; }); } }" x-init="refresh()">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-field" @click="refresh()" :disabled="loading">
+              <span x-show="!loading">Refresh Status</span>
+              <span x-show="loading">Checking...</span>
+            </button>
+            <template x-if="devices.length > 0">
+              <span x-text="devices.length + ' device(s) connected'" style="font-size: 0.8rem; opacity: 0.7;"></span>
+            </template>
+            <template x-if="devices.length === 0 && !loading">
+              <span style="font-size: 0.8rem; opacity: 0.5;">No devices connected</span>
+            </template>
+          </div>
+          <template x-if="devices.length > 0">
+            <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">
+              <template x-for="d in devices" :key="d.serial">
+                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: var(--color-background-hover, rgba(255,255,255,0.04)); border-radius: 4px; font-size: 0.8rem;">
+                  <span x-text="d.serial" style="opacity: 0.9;"></span>
+                  <span x-text="d.model ? '(' + d.model + ')' : ''" style="opacity: 0.5;"></span>
+                  <span x-text="d.state" :style="'margin-left: auto; padding: 1px 6px; border-radius: 8px; font-size: 0.7rem; font-weight: 600;' + (d.state === 'device' ? 'background: rgba(76,175,80,0.15); color: #4caf50;' : 'background: rgba(233,69,96,0.15); color: #e94560;')"></span>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Device Control</div>
+          <div class="field-description">Open the device control panel</div>
+        </div>
+        <div class="field-control">
+          <button class="btn btn-field" @click="openModal('/plugins/droidclaw/webui/device-panel.html?dc=' + Date.now())">
+            Open Device Panel
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+</div>
+
+<style>
+.dc-model-search-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.6;
+  z-index: 1;
+}
+.dc-model-search-btn:hover {
+  opacity: 1;
+}
+.dc-model-search-btn > span {
+  grid-area: 1 / 1;
+  font-size: 18px;
+  transition: opacity 0.15s;
+}
+.dc-search-spinner {
+  animation: dc-spin 0.8s linear infinite;
+}
+@keyframes dc-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.dc-model-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--color-input);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 50;
+  padding: 4px;
+}
+.dc-model-item {
+  padding: 5px 8px;
+  font-size: 0.8rem;
+  border-radius: 4px;
+  cursor: pointer;
+  word-break: break-all;
+}
+.dc-model-item:hover {
+  background: var(--color-background-hover, rgba(255,255,255,0.06));
+}
+.dc-model-item.disabled {
+  opacity: 0.4;
+  cursor: default;
+  font-style: italic;
+}
+.dc-model-item.matched {
+  font-weight: 500;
+}
+.dc-model-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--color-border);
+  opacity: 0.5;
+}
+.dc-model-item.disabled:hover {
+  background: transparent;
+}
+</style>

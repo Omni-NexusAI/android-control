@@ -1,0 +1,9 @@
+config.json
+config.yaml
+tmp/
+__pycache__/
+*.pyc
+*.pyo
+*.pem
+*screen*.png
+*_screenshot*.png

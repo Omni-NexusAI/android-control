@@ -1,0 +1,52 @@
+<script>
+(function() {
+  // Widen modals that contain Android Control content
+  function widenAndroidControlModals() {
+    const overlays = document.querySelectorAll('#modal-overlay, .modal-overlay, [id*="modal"]');
+    overlays.forEach(function(overlay) {
+      if (overlay.textContent.includes('Android Control') ||
+          overlay.textContent.includes('Control Panel') ||
+          overlay.innerHTML.includes('dc-panel-container')) {
+        overlay.style.maxWidth = '95vw';
+        overlay.style.width = '720px';
+        const content = overlay.querySelector('.modal-content, [class*="modal-content"]');
+        if (content) {
+          content.style.maxWidth = '100%';
+          content.style.width = '100%';
+        }
+      }
+    });
+  }
+  
+  // Run on load and periodically
+  widenAndroidControlModals();
+  setInterval(widenAndroidControlModals, 100);
+  
+  // Also hook into openModal if available
+  if (typeof openModal === 'function') {
+    const originalOpenModal = openModal;
+    window.openModal = function(path) {
+      if (typeof path === 'string' && path.indexOf('droidclaw/webui/device-panel.html') >= 0 && path.indexOf('dc=') < 0) {
+        path += (path.indexOf('?') >= 0 ? '&' : '?') + 'dc=' + Date.now();
+        arguments[0] = path;
+      }
+      setTimeout(widenAndroidControlModals, 50);
+      setTimeout(widenAndroidControlModals, 200);
+      return originalOpenModal.apply(this, arguments);
+    };
+  }
+})();
+</script>
+
+<style>
+/* Fallback: when droidclaw-wide-modal class is present */
+.droidclaw-wide-modal {
+  max-width: 95vw !important;
+  width: 720px !important;
+}
+.droidclaw-wide-modal .modal-content,
+.droidclaw-wide-modal [class*="modal-content"] {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+</style>

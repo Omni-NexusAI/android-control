@@ -1,0 +1,53 @@
+name: droidclaw
+title: Android Control
+version: 1.0.0
+description: Android device control via ADB with LLM-guided navigation and workflow automation
+always_enabled: true
+dependencies:
+  - zeroconf
+  - cryptography
+config_schema:
+  defaults:
+    type: object
+    description: Default settings for Android Control
+    properties:
+      device:
+        type: string
+        description: Default ADB device serial/IP (empty = auto-detect)
+      provider:
+        type: string
+        description: LLM provider (ollama, lm_studio, groq, openrouter, openai, anthropic)
+      default_model:
+        type: string
+        description: Default model for execution
+      model_supports_vision:
+        type: boolean
+        description: Whether the configured model can accept image inputs
+      api_base:
+        type: string
+        description: Custom API base URL (empty = provider default)
+      vision_mode:
+        type: string
+        description: "off, fallback, or always"
+      tier:
+        type: string
+        description: "auto, tier1, tier2, tier3"
+      max_steps:
+        type: integer
+        description: Maximum steps for execution
+      stuck_threshold:
+        type: integer
+        description: Steps without progress before intervention
+      step_delay:
+        type: integer
+        description: Seconds between steps
+      max_elements:
+        type: integer
+        description: Maximum UI elements to parse
+      auto_intervene:
+        type: boolean
+        description: Monitor and intervene when stuck
+settings_sections:
+  - defaults
+per_project_config: true
+per_agent_config: true
