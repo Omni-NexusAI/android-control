@@ -37,6 +37,20 @@ def check_dependencies() -> dict:
     }
 
 
+def ensure_runtime_dependencies(include_adb: bool = True) -> dict:
+    """Install Python QR dependencies and, optionally, plugin-owned platform-tools."""
+    ensure_dependencies()
+    result = {
+        "python_dependencies": check_dependencies(),
+        "platform_tools": None,
+    }
+    if include_adb:
+        from usr.plugins.droidclaw.helpers.platform_tools import ensure_platform_tools
+
+        result["platform_tools"] = ensure_platform_tools()
+    return result
+
+
 def ensure_dependencies() -> None:
     global _CHECKED
 

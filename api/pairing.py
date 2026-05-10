@@ -167,8 +167,10 @@ class Pairing(ApiHandler):
     async def _start_qr_pairing(self) -> dict:
         """Start the Android ADB QR pairing workflow."""
         try:
+            from usr.plugins.droidclaw.helpers.dependencies import ensure_runtime_dependencies
             from usr.plugins.droidclaw.helpers.pairing_server import get_pairing_server
 
+            ensure_runtime_dependencies(include_adb=True)
             server = get_pairing_server()
             return server.start(timeout=90.0)
         except Exception as e:
@@ -201,8 +203,10 @@ class Pairing(ApiHandler):
         """Check if QR pairing dependencies are available."""
         from usr.plugins.droidclaw.helpers.dependencies import check_dependencies as check_python_dependencies
         from usr.plugins.droidclaw.helpers.pairing_server import check_dependencies as check_adb_dependencies
+        from usr.plugins.droidclaw.helpers.platform_tools import find_adb
 
         python_deps = check_python_dependencies()
+        adb_client = find_adb()
         adb_deps = check_adb_dependencies()
         missing = list(dict.fromkeys((python_deps.get("missing") or []) + (adb_deps.get("missing") or [])))
         result = {
@@ -210,6 +214,7 @@ class Pairing(ApiHandler):
             "missing": missing,
             "install_command": python_deps.get("install_command") or adb_deps.get("install_command") or "",
             "python_dependencies": python_deps,
+            "adb_client": adb_client,
             "adb_dependencies": adb_deps,
             "adb_backend": adb_diagnostics(),
         }

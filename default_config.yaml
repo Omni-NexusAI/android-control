@@ -2,6 +2,7 @@ device: ""
 adb_backend: "auto"
 adb_host: "host.docker.internal"
 adb_port: 5037
+adb_path: ""
 provider: "ollama"
 default_model: "qwen3.5-35b-a3b"
 model_supports_vision: true

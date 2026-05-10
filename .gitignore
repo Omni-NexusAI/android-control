@@ -7,3 +7,5 @@ __pycache__/
 *.pem
 *screen*.png
 *_screenshot*.png
+data/
+platform-tools/

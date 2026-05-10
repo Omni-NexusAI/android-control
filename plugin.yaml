@@ -14,6 +14,18 @@ config_schema:
       device:
         type: string
         description: Default ADB device serial/IP (empty = auto-detect)
+      adb_path:
+        type: string
+        description: Optional absolute path to adb. Leave empty to use PATH, plugin-owned platform-tools, or Android SDK defaults.
+      adb_backend:
+        type: string
+        description: "auto, host, or container"
+      adb_host:
+        type: string
+        description: Host ADB server hostname when adb_backend is host/auto
+      adb_port:
+        type: integer
+        description: Host ADB server port
       provider:
         type: string
         description: LLM provider (ollama, lm_studio, groq, openrouter, openai, anthropic)

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from helpers import plugins
+from usr.plugins.droidclaw.helpers.platform_tools import find_adb
 
 PLUGIN_NAME = "droidclaw"
 
@@ -97,14 +98,23 @@ def _host_settings(config: Optional[dict] = None) -> tuple[str, str]:
     return host, port
 
 
-def _container_backend(message: str = "Using container-local ADB server") -> AdbBackend:
-    return AdbBackend(name="container", command_prefix=["adb"], message=message)
+def _adb_client(config: Optional[dict] = None) -> dict:
+    return find_adb(config if config is not None else _load_config())
 
 
-def _host_backend(host: str, port: str, message: str = "") -> AdbBackend:
+def _adb_prefix(config: Optional[dict] = None) -> list[str]:
+    adb = _adb_client(config)
+    return [adb["path"]] if adb.get("available") and adb.get("path") else ["adb"]
+
+
+def _container_backend(message: str = "Using container-local ADB server", config: Optional[dict] = None) -> AdbBackend:
+    return AdbBackend(name="container", command_prefix=_adb_prefix(config), message=message)
+
+
+def _host_backend(host: str, port: str, message: str = "", config: Optional[dict] = None) -> AdbBackend:
     return AdbBackend(
         name="host",
-        command_prefix=["adb", "-H", host, "-P", str(port)],
+        command_prefix=_adb_prefix(config) + ["-H", host, "-P", str(port)],
         message=message or f"Using host ADB server at {host}:{port}",
     )
 
@@ -137,28 +147,33 @@ def select_backend(prefer: str | None = None) -> AdbBackend:
     config = _load_config()
     mode = (prefer or _backend_mode(config)).lower().strip()
     host, port = _host_settings(config)
+    adb = _adb_client(config)
+    if not adb.get("available"):
+        return _container_backend(f"ADB client is not available: {adb.get('message')}", config)
 
     if mode in {"container", "local"}:
-        return _container_backend("Configured to use container-local ADB server")
+        return _container_backend("Configured to use container-local ADB server", config)
 
     if mode == "host":
-        ok, message = _probe(["adb", "-H", host, "-P", str(port)])
+        ok, message = _probe(_adb_prefix(config) + ["-H", host, "-P", str(port)])
         if ok:
-            return _host_backend(host, port, message)
-        return _host_backend(host, port, f"Configured host ADB was not reachable: {message}")
+            return _host_backend(host, port, message, config)
+        return _host_backend(host, port, f"Configured host ADB was not reachable: {message}", config)
 
-    ok, message = _probe(["adb", "-H", host, "-P", str(port)])
+    ok, message = _probe(_adb_prefix(config) + ["-H", host, "-P", str(port)])
     if ok:
-        return _host_backend(host, port, message)
+        return _host_backend(host, port, message, config)
 
-    container_ok, container_message = _probe(["adb"])
+    container_ok, container_message = _probe(_adb_prefix(config))
     if container_ok:
         return _container_backend(
-            f"Host ADB at {host}:{port} was not reachable ({message}); using container-local ADB"
+            f"Host ADB at {host}:{port} was not reachable ({message}); using container-local ADB",
+            config,
         )
 
     return _container_backend(
-        f"Host ADB at {host}:{port} was not reachable ({message}); container ADB check failed ({container_message})"
+        f"Host ADB at {host}:{port} was not reachable ({message}); container ADB check failed ({container_message})",
+        config,
     )
 
 
@@ -513,9 +528,11 @@ def get_connected_device_serials(backend: AdbBackend | None = None) -> list[str]
 def diagnostics() -> dict:
     config = _load_config()
     host, port = _host_settings(config)
+    adb = _adb_client(config)
     selected = select_backend()
-    host_ok, host_message = _probe(["adb", "-H", host, "-P", str(port)])
-    container_ok, container_message = _probe(["adb"])
+    adb_prefix = _adb_prefix(config)
+    host_ok, host_message = _probe(adb_prefix + ["-H", host, "-P", str(port)])
+    container_ok, container_message = _probe(adb_prefix)
     services = ""
     try:
         services = run_adb_result(["mdns", "services"], timeout=8, backend=selected, resolve=False)["output"]
@@ -528,6 +545,10 @@ def diagnostics() -> dict:
         "selected_message": selected.message,
         "host": host,
         "port": str(port),
+        "adb_client": adb,
+        "adb_path": adb.get("path") or "",
+        "adb_client_available": bool(adb.get("available")),
+        "adb_client_message": adb.get("message") or "",
         "host_available": host_ok,
         "host_message": host_message,
         "container_available": container_ok,

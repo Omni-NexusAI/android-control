@@ -85,8 +85,15 @@ def check_dependencies() -> dict:
     preflight = qr_backend_preflight(diag)
     available = preflight["available"]
     selected_message = diag.get("selected_message") or ""
-    missing = [] if available else ["adb mdns"]
-    install_command = "" if available else "Install/update Android platform-tools with mDNS support"
+    adb_client = diag.get("adb_client") or {}
+    missing = []
+    install_command = ""
+    if not adb_client.get("available"):
+        missing.append("adb client")
+        install_command = "Install Android platform-tools or let Android Control download plugin-owned platform-tools"
+    elif not available:
+        missing.append("adb mdns")
+        install_command = "Start/restart an ADB server with mDNS support"
     return {
         "available": available,
         "missing": missing,
@@ -100,11 +107,27 @@ def check_dependencies() -> dict:
 def qr_backend_preflight(diag: Optional[dict] = None) -> dict:
     """Return whether QR pairing has a backend likely to see Wireless ADB mDNS."""
     diag = diag or adb_diagnostics()
+    adb_client = diag.get("adb_client") or {}
     selected = diag.get("selected") or ""
     selected_message = diag.get("selected_message") or ""
     mdns_output = diag.get("mdns_services") or ""
     host_available = bool(diag.get("host_available"))
     container_available = bool(diag.get("container_available"))
+    if not adb_client.get("available"):
+        return {
+            "available": False,
+            "selected": selected,
+            "selected_message": selected_message,
+            "host_available": False,
+            "host_message": "",
+            "container_available": False,
+            "container_message": "",
+            "selected_has_adb_services": False,
+            "mdns_services": mdns_output,
+            "adb_client": adb_client,
+            "message": adb_client.get("message") or "ADB client is not available.",
+        }
+
     selected_available = (
         (selected == "host" and host_available)
         or (selected == "container" and container_available)
@@ -133,6 +156,7 @@ def qr_backend_preflight(diag: Optional[dict] = None) -> dict:
         "container_message": diag.get("container_message") or "",
         "selected_has_adb_services": selected_has_adb_services,
         "mdns_services": mdns_output,
+        "adb_client": adb_client,
         "message": message,
     }
 

@@ -44,6 +44,7 @@ Important settings:
 
 - `adb_backend`: chooses how Android Control reaches ADB. Use `auto` for default detection, `host` for an ADB server running on the host, or `container` for ADB inside the Agent Zero container.
 - `adb_host` / `adb_port`: host ADB server endpoint when `adb_backend` is set to `host`.
+- `adb_path`: optional absolute path to an `adb` client. Leave empty to use PATH, bundled plugin-owned platform-tools, or common Android SDK locations.
 - `device`: optional preferred Android device id.
 - `provider`, `default_model`, `api_base`: plugin-local model provider, model name, and API endpoint for Android Control task execution.
 - `model_supports_vision` / `vision_mode`: controls whether screenshots can be used by the task loop and how vision should be handled.

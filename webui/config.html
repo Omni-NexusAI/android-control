@@ -256,6 +256,16 @@
 
       <div class="field">
         <div class="field-label">
+          <div class="field-title">ADB Path</div>
+          <div class="field-description">Optional absolute path to adb. Leave empty to use bundled platform-tools or auto-detection.</div>
+        </div>
+        <div class="field-control">
+          <input type="text" x-model="config.adb_path" placeholder="Auto">
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
           <div class="field-title">Quick Pair</div>
           <div class="field-description">Open the wireless pairing wizard to pair a new device</div>
         </div>
