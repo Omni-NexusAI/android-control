@@ -7,12 +7,20 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from helpers import plugins
 from usr.plugins.droidclaw.helpers.platform_tools import find_adb
 
+try:
+    import yaml
+except Exception:  # pragma: no cover - Agent Zero normally includes PyYAML
+    yaml = None
+
 PLUGIN_NAME = "droidclaw"
+_PLUGIN_DIR = Path(__file__).resolve().parents[1]
+_DEFAULT_CONFIG_FILE = _PLUGIN_DIR / "default_config.yaml"
 
 
 @dataclass(frozen=True)
@@ -77,10 +85,25 @@ class MdnsService:
 
 
 def _load_config() -> dict:
+    defaults = {}
     try:
-        return plugins.get_plugin_config(PLUGIN_NAME) or {}
+        if yaml is not None:
+            defaults = yaml.safe_load(_DEFAULT_CONFIG_FILE.read_text(encoding="utf-8")) or {}
     except Exception:
-        return {}
+        defaults = {}
+
+    try:
+        configured = plugins.get_plugin_config(PLUGIN_NAME) or {}
+    except Exception:
+        configured = {}
+
+    merged = dict(defaults)
+    nested = configured.get("defaults") if isinstance(configured, dict) else None
+    if isinstance(nested, dict):
+        merged.update(nested)
+    if isinstance(configured, dict):
+        merged.update({key: value for key, value in configured.items() if key != "defaults"})
+    return merged
 
 
 def _backend_mode(config: Optional[dict] = None) -> str:
@@ -159,6 +182,45 @@ def select_backend(prefer: str | None = None) -> AdbBackend:
         if ok:
             return _host_backend(host, port, message, config)
         return _host_backend(host, port, f"Configured host ADB was not reachable: {message}", config)
+
+    if mode in {"auto", "auto_container_first", ""}:
+        container_ok, container_message = _probe(_adb_prefix(config))
+        if container_ok:
+            return _container_backend(
+                f"Using container-local ADB server ({container_message})",
+                config,
+            )
+
+        ok, message = _probe(_adb_prefix(config) + ["-H", host, "-P", str(port)])
+        if ok:
+            return _host_backend(
+                host,
+                port,
+                f"Container-local ADB was not available ({container_message}); using reachable host ADB ({message})",
+                config,
+            )
+
+        return _container_backend(
+            f"Container-local ADB check failed ({container_message}); host ADB at {host}:{port} also failed ({message})",
+            config,
+        )
+
+    if mode == "auto_host_first":
+        ok, message = _probe(_adb_prefix(config) + ["-H", host, "-P", str(port)])
+        if ok:
+            return _host_backend(host, port, message, config)
+
+        container_ok, container_message = _probe(_adb_prefix(config))
+        if container_ok:
+            return _container_backend(
+                f"Host ADB at {host}:{port} was not reachable ({message}); using container-local ADB",
+                config,
+            )
+
+        return _container_backend(
+            f"Host ADB at {host}:{port} was not reachable ({message}); container ADB check failed ({container_message})",
+            config,
+        )
 
     ok, message = _probe(_adb_prefix(config) + ["-H", host, "-P", str(port)])
     if ok:
@@ -438,14 +500,43 @@ def run_adb_result(
             "device_resolution": resolution,
         }
     cmd = adb_cmd(args, device=resolved_device, backend=selected)
-    proc = subprocess.run(
-        cmd,
-        input=input_text,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        message = f"ADB client was not found at command path: {cmd[0] if cmd else 'adb'}"
+        return {
+            "returncode": 127,
+            "stdout": "",
+            "stderr": message,
+            "output": message,
+            "backend": selected.name,
+            "backend_message": selected.message,
+            "cmd": cmd,
+            "requested_device": device or "",
+            "resolved_device": resolved_device or "",
+            "device_resolution": resolution,
+        }
+    except subprocess.TimeoutExpired:
+        message = f"ADB command timed out after {timeout}s"
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": message,
+            "output": message,
+            "backend": selected.name,
+            "backend_message": selected.message,
+            "cmd": cmd,
+            "requested_device": device or "",
+            "resolved_device": resolved_device or "",
+            "device_resolution": resolution,
+        }
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
     output = "\n".join(part for part in (stdout, stderr) if part).strip()
@@ -494,16 +585,45 @@ async def run_adb_async(
             "device_resolution": resolution,
         }
     cmd = adb_cmd(args, device=resolved_device, backend=selected)
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE if input_text is not None else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(input=input_text.encode() if input_text is not None else None),
-        timeout=timeout,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE if input_text is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=input_text.encode() if input_text is not None else None),
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        message = f"ADB client was not found at command path: {cmd[0] if cmd else 'adb'}"
+        return {
+            "returncode": 127,
+            "stdout": "",
+            "stderr": message,
+            "output": message,
+            "backend": selected.name,
+            "backend_message": selected.message,
+            "cmd": cmd,
+            "requested_device": device or "",
+            "resolved_device": resolved_device or "",
+            "device_resolution": resolution,
+        }
+    except asyncio.TimeoutError:
+        message = f"ADB command timed out after {timeout}s"
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": message,
+            "output": message,
+            "backend": selected.name,
+            "backend_message": selected.message,
+            "cmd": cmd,
+            "requested_device": device or "",
+            "resolved_device": resolved_device or "",
+            "device_resolution": resolution,
+        }
     out = stdout.decode("utf-8", errors="replace").strip()
     err = stderr.decode("utf-8", errors="replace").strip()
     output = "\n".join(part for part in (out, err) if part).strip()

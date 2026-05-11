@@ -214,9 +214,9 @@ def execute_workflow(
             step_result['error'] = 'timeout'
             errors.append({'step': i, 'error': 'timeout'})
         except FileNotFoundError:
-            logger.error("adb not found")
-            step_result['error'] = 'adb not found'
-            errors.append({'step': i, 'error': 'adb not found'})
+            logger.error("ADB client is unavailable")
+            step_result['error'] = 'ADB client is unavailable; check Android Control dependency diagnostics'
+            errors.append({'step': i, 'error': step_result['error']})
             break
         except Exception as e:
             logger.error("Step %d exception: %s", i, e)

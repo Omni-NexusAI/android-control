@@ -18,7 +18,7 @@ async def _run_adb(cmd: list, device: str, timeout: int = 30) -> tuple:
     except asyncio.TimeoutError:
         return (-1, "", "ADB command timed out")
     except FileNotFoundError:
-        return (-1, "", "adb not found in PATH")
+        return (-1, "", "ADB client is unavailable; check Android Control dependency diagnostics")
     except Exception as e:
         return (-1, "", str(e))
 
@@ -183,7 +183,7 @@ class AdbScreen(Tool):
         device = await _get_device(device)
         if not device:
             return Response(
-                message="Error: No ADB device found. Connect a device first.",
+                message="Error: No ADB device is visible inside the A0 container. Connect a device first; for wired USB, Docker must expose the device to the container.",
                 break_loop=False,
             )
 

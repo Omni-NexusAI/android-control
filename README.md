@@ -42,7 +42,7 @@ Android Control has its own plugin settings. The model assigned to Android Contr
 
 Important settings:
 
-- `adb_backend`: chooses how Android Control reaches ADB. Use `auto` for default detection, `host` for an ADB server running on the host, or `container` for ADB inside the Agent Zero container.
+- `adb_backend`: chooses how Android Control reaches ADB. The marketplace default is `auto_container_first`, which starts and uses the plugin-owned ADB daemon inside Agent Zero. Use `host` only when you intentionally want an already-running host ADB server.
 - `adb_host` / `adb_port`: host ADB server endpoint when `adb_backend` is set to `host`.
 - `adb_path`: optional absolute path to an `adb` client. Leave empty to use PATH, bundled plugin-owned platform-tools, or common Android SDK locations.
 - `device`: optional preferred Android device id.

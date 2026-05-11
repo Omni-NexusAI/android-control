@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import socket
 import string
 import threading
 import time
@@ -138,12 +139,10 @@ def qr_backend_preflight(diag: Optional[dict] = None) -> dict:
     message = selected_message or "ADB backend is available"
     if not selected_available:
         message = "ADB mDNS is not available from the selected Android Control backend."
-    elif selected == "container" and not host_available and not selected_has_adb_services:
-        available = False
+    elif selected == "container" and not selected_has_adb_services:
         message = (
-            "Windows host ADB is not running or is not reachable from A0, and "
-            "container-local ADB cannot currently see any Wireless ADB mDNS services. "
-            "Start Android platform-tools ADB on Windows, then try QR pairing again."
+            "Container-local ADB is running. No Wireless ADB mDNS services are visible yet; "
+            "Android Control will wait for the phone to publish its pairing service after QR scan."
         )
 
     return {
@@ -309,7 +308,8 @@ class PairingServer:
                     (
                         "Phone Wireless ADB pairing service was not discovered. "
                         f"Android Control is using the {self._backend_name or 'selected'} ADB backend. "
-                        "Check that the phone and ADB host are on the same LAN and that mDNS reaches this backend. "
+                        "The A0 container did not see the phone's Wireless ADB mDNS service. "
+                        "Check that the phone and A0 container are on a network path where mDNS multicast is visible. "
                         f"Last mDNS output: {self._last_mdns_output or 'none'}"
                     ),
                 )
@@ -409,6 +409,10 @@ class PairingServer:
             if len(args) >= 2 and args[0] == "mdns" and args[1] == "services":
                 self._last_mdns_output = output
 
+    def _record_mdns_output(self, output: str):
+        with self._lock:
+            self._last_mdns_output = output
+
     def _set_phase(self, phase: str, message: str, **fields):
         with self._lock:
             self._phase = phase
@@ -471,12 +475,114 @@ def _adb_success(output: str, needles: tuple[str, ...]) -> bool:
 
 
 def _list_mdns_services() -> list[MdnsService]:
+    adb_output = ""
     try:
         result = _run_adb(["mdns", "services"], timeout=8, backend=get_pairing_server()._backend)
+        adb_output = result["output"]
     except Exception as e:
         logger.warning("adb mdns services failed: %s", e)
+    services = parse_mdns_services(adb_output)
+    zeroconf_services = _discover_zeroconf_services(timeout=0.8)
+    combined: dict[tuple[str, str, str], MdnsService] = {}
+    for service in [*services, *zeroconf_services]:
+        combined[(service.name, service.service_type, service.address)] = service
+    if zeroconf_services:
+        zc_lines = [
+            f"{service.name}\t{service.service_type}\t{service.address}"
+            for service in zeroconf_services
+        ]
+        try:
+            get_pairing_server()._record_mdns_output(
+                "\n".join(
+                    part
+                    for part in (
+                        adb_output,
+                        "zeroconf discovered services:",
+                        "\n".join(zc_lines),
+                    )
+                    if part
+                )
+            )
+        except Exception:
+            pass
+    return list(combined.values())
+
+
+def _discover_zeroconf_services(timeout: float = 0.8) -> list[MdnsService]:
+    try:
+        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+    except Exception:
         return []
-    return parse_mdns_services(result["output"])
+
+    service_types = [
+        f"{PAIRING_SERVICE_TYPE}.local.",
+        *[f"{service_type}.local." for service_type in CONNECT_SERVICE_TYPES],
+    ]
+    found: list[MdnsService] = []
+    lock = threading.Lock()
+
+    def _instance_name(full_name: str, service_type: str) -> str:
+        suffix = f".{service_type}"
+        return full_name[: -len(suffix)] if full_name.endswith(suffix) else full_name.split(".", 1)[0]
+
+    def _addr_text(info) -> str:
+        addresses = getattr(info, "addresses", None) or []
+        if not addresses:
+            parsed = getattr(info, "parsed_addresses", lambda: [])()
+            return parsed[0] if parsed else ""
+        try:
+            return socket.inet_ntop(socket.AF_INET, addresses[0])
+        except Exception:
+            try:
+                return socket.inet_ntop(socket.AF_INET6, addresses[0])
+            except Exception:
+                return ""
+
+    class _Listener(ServiceListener):
+        def add_service(self, zeroconf, service_type, name):  # type: ignore[override]
+            self._record(zeroconf, service_type, name)
+
+        def update_service(self, zeroconf, service_type, name):  # type: ignore[override]
+            self._record(zeroconf, service_type, name)
+
+        def remove_service(self, zeroconf, service_type, name):  # type: ignore[override]
+            return None
+
+        def _record(self, zeroconf, service_type, name):
+            info = zeroconf.get_service_info(service_type, name, timeout=500)
+            if not info:
+                return
+            host = _addr_text(info)
+            port = str(getattr(info, "port", "") or "")
+            if not host or not port:
+                return
+            base_type = service_type.replace(".local.", "")
+            service = MdnsService(
+                name=_instance_name(name, service_type),
+                service_type=base_type,
+                address=f"{host}:{port}",
+            )
+            with lock:
+                found.append(service)
+
+    zeroconf = Zeroconf()
+    try:
+        listener = _Listener()
+        browsers = [ServiceBrowser(zeroconf, service_type, listener) for service_type in service_types]
+        time.sleep(timeout)
+        for browser in browsers:
+            try:
+                browser.cancel()
+            except Exception:
+                pass
+    except Exception:
+        return []
+    finally:
+        try:
+            zeroconf.close()
+        except Exception:
+            pass
+    return found
 
 
 def _first_connected_device() -> str:

@@ -103,7 +103,7 @@ def dump_ui(device: str = None) -> list[dict]:
         logger.error("uiautomator dump timed out")
         return []
     except FileNotFoundError:
-        logger.error("adb not found in PATH")
+        logger.error("ADB client is unavailable; check Android Control dependency diagnostics")
         return []
 
     # Pull the dump file to a temp location

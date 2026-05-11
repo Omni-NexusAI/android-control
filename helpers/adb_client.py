@@ -48,8 +48,8 @@ def run_adb(args: list, device: str = None, timeout: int = 10) -> str:
         result = run_adb_result(args, device=device if device is not None else "", timeout=timeout)
     except FileNotFoundError:
         raise RuntimeError(
-            "adb not found. Install Android SDK platform-tools and ensure "
-            "adb is on PATH."
+            "ADB client is unavailable. Android Control should install plugin-owned "
+            "platform-tools automatically; check Android Control dependency diagnostics."
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"adb command timed out after {timeout}s")

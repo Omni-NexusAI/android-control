@@ -19,7 +19,7 @@ config_schema:
         description: Optional absolute path to adb. Leave empty to use PATH, plugin-owned platform-tools, or Android SDK defaults.
       adb_backend:
         type: string
-        description: "auto, host, or container"
+        description: "auto_container_first, auto, host, container, or auto_host_first"
       adb_host:
         type: string
         description: Host ADB server hostname when adb_backend is host/auto

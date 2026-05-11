@@ -44,7 +44,7 @@ def _run_adb(args: list, device: str = None, timeout: int = 10) -> str:
             raise RuntimeError(f"adb failed: {result['stderr'] or result['stdout'] or result['output']}")
         return result["stdout"].strip()
     except FileNotFoundError:
-        raise RuntimeError("adb not found. Install Android SDK platform-tools.")
+        raise RuntimeError("ADB client is unavailable. Android Control should install plugin-owned platform-tools; check Android Control dependency diagnostics.")
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"adb command timed out after {timeout}s")
 
@@ -172,7 +172,7 @@ class DroidClawRun(Tool):
         device = resolution.get("resolved_device") or ""
         if not device:
             return Response(
-                message="Error: No ADB device connected. Connect a phone first.",
+                message="Error: No ADB device is visible inside the A0 container. Connect a phone first; for wired USB, Docker must expose the device to the container.",
                 break_loop=False,
             )
 
