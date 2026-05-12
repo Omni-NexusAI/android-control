@@ -9,8 +9,10 @@ from helpers.print_style import PrintStyle
 class DroidClawAdbBootstrap(Extension):
     async def execute(self, **kwargs: Any) -> None:
         try:
+            from usr.plugins.droidclaw.hooks import ensure_bundled_skills
             from usr.plugins.droidclaw.helpers.adb_runtime import bootstrap_adb_runtime
 
+            ensure_bundled_skills()
             state = bootstrap_adb_runtime(force=False)
             if state.get("success"):
                 return

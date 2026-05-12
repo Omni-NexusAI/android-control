@@ -1,5 +1,5 @@
 ---
-name: android_control_bridge_setup
+name: android-control-bridge-setup
 description: >
   Set up the external ADB visibility that Android Control needs for QR pairing
   and wired USB detection when Agent Zero runs inside Docker.
