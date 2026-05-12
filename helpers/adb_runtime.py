@@ -73,6 +73,93 @@ def read_adb_health() -> dict:
         return {}
 
 
+def bridge_capabilities(force: bool = False) -> dict:
+    """Return QR/USB readiness for the current host/container bridge state."""
+    if force:
+        health = bootstrap_adb_runtime(force=True)
+    else:
+        health = read_adb_health() or bootstrap_adb_runtime(force=False)
+
+    try:
+        from usr.plugins.droidclaw.helpers.adb_backend import diagnostics
+
+        diag = diagnostics()
+    except Exception as exc:
+        diag = {"error": str(exc)}
+
+    container = health.get("container") or {}
+    host_available = bool(diag.get("host_available"))
+    container_available = bool(diag.get("container_available") or container.get("daemon_running"))
+    selected = diag.get("selected") or ""
+    mdns_output = diag.get("mdns_services") or (container.get("mdns_services") or {}).get("output") or ""
+    container_mdns_visible = bool(container.get("mdns_visible") or "_adb" in mdns_output)
+    usb_visible = bool(container.get("usb_or_device_visible"))
+
+    host_devices_visible = False
+    if host_available:
+        adb = diag.get("adb_client") or {}
+        adb_path = adb.get("path") or ""
+        host = diag.get("host") or "host.docker.internal"
+        port = str(diag.get("port") or "5037")
+        if adb_path:
+            host_devices = _run([adb_path, "-H", host, "-P", port, "devices", "-l"], timeout=8)
+            host_devices_visible = any(
+                "\tdevice" in line or " device" in line
+                for line in _device_lines(host_devices.get("output", ""))
+            )
+        else:
+            host_devices = {}
+    else:
+        host_devices = {}
+
+    qr_ready = bool(host_available or container_mdns_visible)
+    usb_ready = bool(host_available or usb_visible or host_devices_visible)
+    requirements_ready = bool(qr_ready and usb_ready)
+
+    qr_message = (
+        "Wireless ADB QR is ready through the host ADB bridge."
+        if host_available
+        else "Wireless ADB QR needs a backend that can see Android mDNS services. Enable the host ADB bridge or run A0 with LAN mDNS visibility."
+    )
+    if container_mdns_visible and not host_available:
+        qr_message = "Wireless ADB QR may work through container-local mDNS visibility."
+
+    usb_message = (
+        "USB detection is ready through the host ADB bridge."
+        if host_available
+        else "USB detection needs the host ADB bridge or Docker USB passthrough into the A0 container."
+    )
+    if usb_visible and not host_available:
+        usb_message = "USB detection is ready through container USB visibility."
+
+    banner = ""
+    if not requirements_ready:
+        banner = (
+            "Android Control installed its bundled ADB client, but QR pairing and wired USB "
+            "need device visibility from A0. Enable the host ADB bridge for Windows Docker, "
+            "or use container networking/USB passthrough on systems that support it."
+        )
+
+    return {
+        "qr_ready": qr_ready,
+        "usb_ready": usb_ready,
+        "requirements_ready": requirements_ready,
+        "host_bridge_available": host_available,
+        "container_adb_available": container_available,
+        "mdns_visible": bool(host_available or container_mdns_visible),
+        "container_mdns_visible": container_mdns_visible,
+        "usb_visible": bool(usb_visible or host_devices_visible),
+        "host_usb_visible": host_devices_visible,
+        "selected_backend": selected,
+        "qr_message": qr_message,
+        "usb_message": usb_message,
+        "banner": banner,
+        "diagnostics": diag,
+        "health": health,
+        "host_devices": host_devices,
+    }
+
+
 def bootstrap_adb_runtime(force: bool = False) -> dict:
     """Ensure plugin deps exist and the container-local ADB daemon is running."""
     global _BOOTSTRAPPED, _LAST_ATTEMPT

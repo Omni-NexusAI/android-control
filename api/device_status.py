@@ -9,7 +9,7 @@ from usr.plugins.droidclaw.helpers.adb_backend import (
     resolve_device,
     select_backend,
 )
-from usr.plugins.droidclaw.helpers.adb_runtime import read_adb_health
+from usr.plugins.droidclaw.helpers.adb_runtime import bridge_capabilities, read_adb_health
 
 PLUGIN_NAME = "droidclaw"
 
@@ -37,6 +37,8 @@ class DeviceStatus(ApiHandler):
             else:
                 active_device = None
 
+        capabilities = bridge_capabilities(force=False)
+
         return {
             "devices": devices,
             "active_device": active_device,
@@ -52,6 +54,7 @@ class DeviceStatus(ApiHandler):
             "adb_backend_message": backend.message,
             "adb_diagnostics": adb_diagnostics(),
             "adb_health": read_adb_health(),
+            "capabilities": capabilities,
             "usb_visibility_message": "" if devices else "No ADB devices are visible inside the A0 container. For wired USB, Docker must expose the device to the container.",
             "connected": active_device is not None,
         }

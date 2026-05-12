@@ -40,12 +40,21 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 .dc-qr-img{max-width:200px;border-radius:8px;display:inline-block;background:#fff}
 .dc-qr-info{margin-top:8px;font-size:11px;color:#888;line-height:1.5}
 .dc-qr-creds{margin-top:6px;padding:6px 10px;background:#0a0a1a;border-radius:6px;font-family:monospace;font-size:12px;color:#2ecc71;word-break:break-all}
+.dc-bridge-banner{display:none;margin-bottom:14px;padding:12px 14px;border-radius:8px;background:rgba(233,169,69,.12);border:1px solid rgba(233,169,69,.32);color:#f0c36a;line-height:1.45}
+.dc-bridge-banner.ready{background:rgba(46,204,113,.12);border-color:rgba(46,204,113,.25);color:#2ecc71}
+.dc-bridge-title{font-weight:700;margin-bottom:4px}
+.dc-bridge-detail{font-size:12px;color:inherit;opacity:.9}
+.dc-btn[disabled]{opacity:.45;cursor:not-allowed}
 </style>
 <script src="/plugins/droidclaw/webui/qrcode.js"></script>
 </head>
 <body>
 <div class="dc-pairing-container">
 
+  <div class="dc-bridge-banner" id="bridge-banner">
+    <div class="dc-bridge-title" id="bridge-title">Full device access setup needed</div>
+    <div class="dc-bridge-detail" id="bridge-detail"></div>
+  </div>
 
   <!-- Section 1: QR Code Pairing -->
   <div class="dc-section" id="qr-section">
@@ -282,12 +291,57 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   // ===================================================================
     // ===================================================================
   var _qrPollTimer = null;
+  var _bridgeStatus = null;
+
+  function refreshBridgeStatus() {
+    return apiCall({action: 'bridge_status'}).then(function(res) {
+      _bridgeStatus = res || {};
+      updateBridgeBanner(_bridgeStatus);
+      return _bridgeStatus;
+    }).catch(function(e) {
+      updateBridgeBanner({
+        requirements_ready: false,
+        qr_ready: false,
+        usb_ready: false,
+        banner: 'Unable to check Android Control bridge status: ' + e.message
+      });
+      return null;
+    });
+  }
+
+  function updateBridgeBanner(status) {
+    var banner = document.getElementById('bridge-banner');
+    var title = document.getElementById('bridge-title');
+    var detail = document.getElementById('bridge-detail');
+    var qrBtn = document.getElementById('qr-start-btn');
+    if (!banner || !title || !detail || !qrBtn) return;
+
+    if (status && status.requirements_ready) {
+      banner.style.display = 'none';
+      banner.classList.add('ready');
+      title.textContent = 'Full device access ready';
+      detail.textContent = 'QR pairing and wired USB detection have a reachable ADB bridge.';
+      qrBtn.disabled = false;
+      return;
+    }
+
+    banner.style.display = 'block';
+    banner.classList.remove('ready');
+    title.textContent = 'Full device access setup needed';
+    detail.textContent = (status && (status.banner || status.qr_message || status.usb_message)) ||
+      'QR pairing needs Wireless ADB mDNS visibility. Wired USB needs a host ADB bridge or container USB passthrough.';
+    qrBtn.disabled = !(status && status.qr_ready);
+  }
 
 
   // ===================================================================
   // QR Code Pairing with Server Status
   // ===================================================================
   window.dcStartQRPairing = function() {
+    if (_bridgeStatus && !_bridgeStatus.qr_ready) {
+      setStatus('qr-status', _bridgeStatus.qr_message || 'QR pairing is not ready. Enable the host ADB bridge or container mDNS visibility first.', 'err');
+      return;
+    }
     setStatus('qr-status', 'Preparing QR pairing workflow...', 'info');
     apiCall({action: 'start_qr_pairing'})
       .then(function(res) {
@@ -321,6 +375,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
           // Start polling for pairing status
           startPairingPoll();
         } else {
+          if (res.capabilities) updateBridgeBanner(res.capabilities);
           setStatus('qr-status', 'Failed: ' + (res.message || 'Unknown error'), 'err');
         }
       })
@@ -417,6 +472,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   // ===================================================================
   // Init: load devices
   // ===================================================================
+  refreshBridgeStatus();
   window.dcRefreshDevices();
 })();
 </script>

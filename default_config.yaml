@@ -1,5 +1,5 @@
 device: ""
-adb_backend: "auto_container_first"
+adb_backend: "auto_host_first"
 adb_host: "host.docker.internal"
 adb_port: 5037
 adb_path: ""

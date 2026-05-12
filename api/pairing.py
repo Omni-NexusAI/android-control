@@ -37,6 +37,8 @@ class Pairing(ApiHandler):
             return await self._pairing_status()
         elif action == "check_deps":
             return await self._check_deps()
+        elif action == "bridge_status":
+            return await self._bridge_status()
         else:
             return {
                 "success": False,
@@ -167,10 +169,19 @@ class Pairing(ApiHandler):
     async def _start_qr_pairing(self) -> dict:
         """Start the Android ADB QR pairing workflow."""
         try:
-            from usr.plugins.droidclaw.helpers.adb_runtime import bootstrap_adb_runtime
+            from usr.plugins.droidclaw.helpers.adb_runtime import bootstrap_adb_runtime, bridge_capabilities
             from usr.plugins.droidclaw.helpers.pairing_server import get_pairing_server
 
             bootstrap_adb_runtime(force=True)
+            capabilities = bridge_capabilities(force=False)
+            if not capabilities.get("qr_ready"):
+                return {
+                    "success": False,
+                    "message": capabilities.get("qr_message") or "Wireless ADB QR is not ready from this A0 runtime.",
+                    "requires_bridge": True,
+                    "capabilities": capabilities,
+                    "adb_backend": capabilities.get("selected_backend") or "",
+                }
             server = get_pairing_server()
             return server.start(timeout=90.0)
         except Exception as e:
@@ -202,7 +213,7 @@ class Pairing(ApiHandler):
     async def _check_deps(self) -> dict:
         """Check if QR pairing dependencies are available."""
         from usr.plugins.droidclaw.helpers.dependencies import check_dependencies as check_python_dependencies
-        from usr.plugins.droidclaw.helpers.adb_runtime import read_adb_health
+        from usr.plugins.droidclaw.helpers.adb_runtime import bridge_capabilities, read_adb_health
         from usr.plugins.droidclaw.helpers.pairing_server import check_dependencies as check_adb_dependencies
         from usr.plugins.droidclaw.helpers.platform_tools import find_adb
 
@@ -219,6 +230,15 @@ class Pairing(ApiHandler):
             "adb_dependencies": adb_deps,
             "adb_backend": adb_diagnostics(),
             "adb_health": read_adb_health(),
+            "capabilities": bridge_capabilities(force=False),
         }
         result["success"] = True
         return result
+
+    async def _bridge_status(self) -> dict:
+        """Return Android Control bridge capability status for QR and USB."""
+        from usr.plugins.droidclaw.helpers.adb_runtime import bridge_capabilities
+
+        capabilities = bridge_capabilities(force=True)
+        capabilities["success"] = True
+        return capabilities

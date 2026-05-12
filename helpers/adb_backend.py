@@ -183,7 +183,7 @@ def select_backend(prefer: str | None = None) -> AdbBackend:
             return _host_backend(host, port, message, config)
         return _host_backend(host, port, f"Configured host ADB was not reachable: {message}", config)
 
-    if mode in {"auto", "auto_container_first", ""}:
+    if mode in {"auto_container_first", ""}:
         container_ok, container_message = _probe(_adb_prefix(config))
         if container_ok:
             return _container_backend(
@@ -205,7 +205,7 @@ def select_backend(prefer: str | None = None) -> AdbBackend:
             config,
         )
 
-    if mode == "auto_host_first":
+    if mode in {"auto", "auto_host_first"}:
         ok, message = _probe(_adb_prefix(config) + ["-H", host, "-P", str(port)])
         if ok:
             return _host_backend(host, port, message, config)
