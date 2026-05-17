@@ -280,12 +280,18 @@
            x-init="refresh()"
            x-show="loading || !status || !status.requirements_ready">
         <div class="field-label">
-          <div class="field-title">Full Device Access</div>
-          <div class="field-description">QR pairing needs Wireless ADB mDNS visibility. Wired USB needs a host ADB bridge or container USB passthrough.</div>
+          <div class="field-title">Bridge Setup</div>
+          <div class="field-description">Manual ADB pairing works by default. QR pairing and wired USB need the Android Control bridge.</div>
         </div>
         <div class="field-control">
           <div style="padding:8px 10px;border-radius:6px;background:rgba(233,169,69,.12);border:1px solid rgba(233,169,69,.32);color:#f0c36a;font-size:.8rem;line-height:1.4;">
-            <span x-text="loading ? 'Checking Android Control bridge status...' : (status.banner || status.qr_message || status.usb_message || 'Enable the host ADB bridge or container passthrough to unlock QR pairing and wired USB detection.')"></span>
+            <div x-text="loading ? 'Checking Android Control bridge status...' : (status.banner || status.qr_message || status.usb_message || 'Set up the Android Control bridge to unlock QR pairing and wired USB detection.')"></div>
+            <div style="margin-top:8px;color:#f6d99b;">
+              To set it up, connect an external agent to A0's MCP/tools and ask:
+            </div>
+            <div style="margin-top:6px;padding:7px 8px;border-radius:5px;background:rgba(0,0,0,.22);color:#fff;font-family:monospace;font-size:.74rem;white-space:normal;">
+              Use A0's android-control-bridge-setup skill to set up Android Control bridge access for QR pairing and USB device detection. Verify that A0 reports QR/USB ready.
+            </div>
             <button type="button" class="btn btn-field" style="margin-top:8px;" @click="refresh()" :disabled="loading">
               <span x-show="!loading">Recheck</span>
               <span x-show="loading">Checking...</span>
