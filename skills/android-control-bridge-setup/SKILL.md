@@ -24,6 +24,14 @@ the phone from the container.
 
 ## Windows Host ADB Bridge
 
+This setup runs on the Windows host, not inside the A0 container. The ADB bridge
+is shared by every Docker container on the same host through
+`host.docker.internal:5037`, so one working bridge can make Android Control work
+in multiple A0 or Agentspine containers.
+
+Use the temporary setup first. Only create the persistent logon task after the
+user explicitly agrees to a host-level startup entry.
+
 1. Find `adb.exe` on the Windows host:
 
 ```powershell
@@ -42,9 +50,7 @@ adb kill-server
 adb -a -P 5037 nodaemon server
 ```
 
-Keep that terminal open while testing. A future host-side service or scheduled
-task can make this persistent, but Android Control itself cannot create or start
-Windows host services from inside Docker.
+Keep that terminal open while testing.
 
 4. Verify from A0:
 
@@ -56,6 +62,80 @@ Windows host services from inside Docker.
 5. In Android Control, recheck bridge status. QR pairing should become available
 when the host bridge is reachable. Wired USB devices should appear after the
 phone is plugged in and USB debugging is authorized.
+
+### Windows Persistent Startup
+
+If the temporary bridge works and the user wants QR/USB support after a reboot,
+create a current-user scheduled task that starts the host ADB bridge at logon.
+
+First, explain what will be created:
+
+- a script at `%LOCALAPPDATA%\AndroidControlBridge\start-adb-bridge.ps1`
+- a scheduled task named `AndroidControlAdbBridge`
+- the task runs at Windows logon and starts `adb -a -P 5037 start-server`
+
+Then run this from the Windows host, replacing `$adb` automatically from
+`where.exe adb`:
+
+```powershell
+$adb = (where.exe adb | Select-Object -First 1).Trim()
+if (-not $adb) { throw "adb.exe was not found on PATH" }
+
+$bridgeDir = Join-Path $env:LOCALAPPDATA "AndroidControlBridge"
+New-Item -ItemType Directory -Force -Path $bridgeDir | Out-Null
+
+$scriptPath = Join-Path $bridgeDir "start-adb-bridge.ps1"
+@"
+`$adb = '$adb'
+if (-not (Test-Path -LiteralPath `$adb)) { exit 1 }
+& `$adb kill-server *>`$null
+Start-Sleep -Seconds 1
+& `$adb -a -P 5037 start-server *>`$null
+Start-Sleep -Seconds 1
+"@ | Set-Content -LiteralPath $scriptPath -Encoding UTF8
+
+$action = New-ScheduledTaskAction `
+  -Execute "powershell.exe" `
+  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet `
+  -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries `
+  -MultipleInstances IgnoreNew `
+  -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+
+Register-ScheduledTask `
+  -TaskName "AndroidControlAdbBridge" `
+  -Action $action `
+  -Trigger $trigger `
+  -Settings $settings `
+  -Description "Starts Android Control host ADB bridge on logon for Docker containers." `
+  -Force | Out-Null
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath
+```
+
+Verify persistence setup:
+
+```powershell
+Get-ScheduledTask -TaskName AndroidControlAdbBridge
+netstat -ano | Select-String ":5037"
+```
+
+Verify from A0 again:
+
+```bash
+/a0/usr/plugins/droidclaw/data/platform-tools/adb -H host.docker.internal -P 5037 mdns check
+/a0/usr/plugins/droidclaw/data/platform-tools/adb -H host.docker.internal -P 5037 devices -l
+```
+
+To remove the persistent bridge later:
+
+```powershell
+Unregister-ScheduledTask -TaskName AndroidControlAdbBridge -Confirm:$false
+Remove-Item -LiteralPath "$env:LOCALAPPDATA\AndroidControlBridge" -Recurse -Force
+adb kill-server
+```
 
 ## Linux Host or Native Docker
 
