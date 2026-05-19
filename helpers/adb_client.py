@@ -91,7 +91,7 @@ def connect_device(ip_port: str) -> bool:
     Connect to a wireless ADB device.
 
     Args:
-        ip_port: Device address in IP:PORT format (e.g. "192.168.1.10:5555").
+        ip_port: Device address in IP:PORT format (for example, the address shown in Android Wireless debugging).
 
     Returns:
         True if connection succeeded, False otherwise.

@@ -20,7 +20,7 @@ connect:
     "thoughts": ["Need to connect to a wireless adb device"],
     "headline": "Connecting to device via adb",
     "tool_name": "adb_device",
-    "tool_args": {"action": "connect", "ip_port": "192.168.1.10:5555", "device": ""}
+    "tool_args": {"action": "connect", "ip_port": "192.168.1.10:39877", "device": ""}
 }
 ~~~
 

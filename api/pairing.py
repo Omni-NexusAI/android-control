@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 
 from helpers.api import ApiHandler, Request, Response
 from usr.plugins.droidclaw.helpers.adb_backend import (
@@ -15,6 +16,43 @@ from usr.plugins.droidclaw.helpers.adb_backend import (
 logger = logging.getLogger("droidclaw")
 
 PLUGIN_NAME = "droidclaw"
+CONNECT_SERVICE_TYPE = "_adb-tls-connect._tcp"
+
+
+def _normalize_endpoint(ip: str, port: str = "") -> tuple[str, str, str]:
+    ip = str(ip or "").strip()
+    port = str(port or "").strip()
+    if ip and not port and ":" in ip:
+        host, maybe_port = ip.rsplit(":", 1)
+        if host and maybe_port.isdigit():
+            ip = host.strip()
+            port = maybe_port.strip()
+    addr = f"{ip}:{port}" if ip and port else ""
+    return ip, port, addr
+
+
+def _find_connect_service(ip: str, backend=None) -> dict:
+    ip = str(ip or "").strip()
+    if not ip:
+        return {}
+    for service in list_mdns_services(backend):
+        if service.service_type == CONNECT_SERVICE_TYPE and service.host == ip:
+            return {
+                "connect_ip": service.host,
+                "connect_port": service.port,
+                "connect_addr": service.address,
+            }
+    return {}
+
+
+async def _wait_for_connect_service(ip: str, backend=None, timeout: float = 8.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        service = _find_connect_service(ip, backend)
+        if service:
+            return service
+        await asyncio.sleep(1.0)
+    return {}
 
 
 class Pairing(ApiHandler):
@@ -46,8 +84,7 @@ class Pairing(ApiHandler):
             }
 
     async def _pair(self, input: dict) -> dict:
-        ip = input.get("ip", "")
-        port = input.get("port", "")
+        ip, port, addr = _normalize_endpoint(input.get("ip", ""), input.get("port", ""))
         code = input.get("code", "")
 
         if not ip or not port or not code:
@@ -56,18 +93,22 @@ class Pairing(ApiHandler):
                 "message": "ip, port, and code are required for pairing",
             }
 
-        addr = f"{ip}:{port}"
-
         try:
-            result = await run_adb_async(["pair", addr, code], timeout=15)
+            backend = select_backend()
+            result = await run_adb_async(["pair", addr, code], timeout=15, backend=backend, resolve=False)
             combined = result["output"]
 
             if "successfully paired" in combined.lower() or "paired" in combined.lower():
-                return {
+                response = {
                     "success": True,
                     "message": f"Successfully paired with {addr}",
                     "adb_backend": result["backend"],
+                    "pair_ip": ip,
+                    "pair_port": port,
+                    "pair_addr": addr,
                 }
+                response.update(await _wait_for_connect_service(ip, backend))
+                return response
             else:
                 return {
                     "success": False,
@@ -84,19 +125,16 @@ class Pairing(ApiHandler):
             return {"success": False, "message": str(e)}
 
     async def _connect(self, input: dict) -> dict:
-        ip = input.get("ip", "")
-        port = str(input.get("port", "5555"))
+        ip, port, addr = _normalize_endpoint(input.get("ip", ""), input.get("port", ""))
 
-        if not ip:
+        if not ip or not port:
             return {
                 "success": False,
-                "message": "ip is required",
+                "message": "ip and port are required. Enter the IP address and Port shown in Android Wireless debugging.",
             }
 
-        addr = f"{ip}:{port}"
-
         try:
-            result = await run_adb_async(["connect", addr], timeout=15)
+            result = await run_adb_async(["connect", addr], timeout=15, resolve=False)
             combined = result["output"]
 
             if (

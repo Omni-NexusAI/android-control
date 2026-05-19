@@ -106,7 +106,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
     <div class="dc-input-row">
       <div style="flex:1">
         <label class="dc-label">Port</label>
-        <input type="text" class="dc-input" id="conn-port" placeholder="5555" value="5555">
+        <input type="text" class="dc-input" id="conn-port" placeholder="connect port">
       </div>
       <div style="flex:0 0 auto;align-self:flex-end">
         <button class="dc-btn dc-btn-primary" onclick="window.dcConnect()">Connect</button>
@@ -183,12 +183,29 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
     el.className = 'dc-status ' + type;
   }
 
+  function splitIpPort(ipId, portId) {
+    var ipEl = document.getElementById(ipId);
+    var portEl = document.getElementById(portId);
+    if (!ipEl || !portEl) return {ip: '', port: ''};
+    var ip = ipEl.value.trim();
+    var port = portEl.value.trim();
+    var match = ip.match(/^(.+):(\d+)$/);
+    if (match) {
+      ip = match[1].trim();
+      port = match[2].trim();
+      ipEl.value = ip;
+      portEl.value = port;
+    }
+    return {ip: ip, port: port};
+  }
+
   // ===================================================================
   // Manual Pairing
   // ===================================================================
   window.dcPairDevice = function() {
-    var ip = document.getElementById('pair-ip').value.trim();
-    var port = document.getElementById('pair-port').value.trim();
+    var endpoint = splitIpPort('pair-ip', 'pair-port');
+    var ip = endpoint.ip;
+    var port = endpoint.port;
     var code = document.getElementById('pair-code').value.trim();
 
     if (!ip || !port || !code) {
@@ -202,9 +219,15 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
       .then(function(res) {
         if (res.success) {
           setStatus('pair-status', 'Paired successfully!', 'ok');
-          document.getElementById('conn-ip').value = ip;
+          document.getElementById('conn-ip').value = res.connect_ip || ip;
+          document.getElementById('conn-port').value = res.connect_port || '';
+          if (res.connect_addr) {
+            setStatus('pair-status', 'Paired successfully. Connect details found: ' + res.connect_addr, 'ok');
+          } else {
+            setStatus('pair-status', 'Paired successfully. Enter the IP address & Port shown in Android Wireless debugging, then connect.', 'ok');
+          }
         } else {
-          setStatus('pair-status', 'Pairing failed: ' + (res.error || 'Unknown error'), 'err');
+          setStatus('pair-status', 'Pairing failed: ' + (res.message || res.error || 'Unknown error'), 'err');
         }
       })
       .catch(function(e) {
@@ -216,11 +239,12 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   // Connect to Device
   // ===================================================================
   window.dcConnect = function() {
-    var ip = document.getElementById('conn-ip').value.trim();
-    var port = document.getElementById('conn-port').value.trim() || '5555';
+    var endpoint = splitIpPort('conn-ip', 'conn-port');
+    var ip = endpoint.ip;
+    var port = endpoint.port;
 
-    if (!ip) {
-      setStatus('conn-status', 'IP address is required', 'err');
+    if (!ip || !port) {
+      setStatus('conn-status', 'IP address and port are required', 'err');
       return;
     }
 
@@ -232,7 +256,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
           setStatus('conn-status', 'Connected to ' + ip + ':' + port, 'ok');
           setTimeout(function() { window.dcRefreshDevices(); }, 500);
         } else {
-          setStatus('conn-status', 'Connection failed: ' + (res.error || 'Unknown error'), 'err');
+          setStatus('conn-status', 'Connection failed: ' + (res.message || res.error || 'Unknown error'), 'err');
         }
       })
       .catch(function(e) {
@@ -289,6 +313,14 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 
   function escAttr(s) {
     return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  }
+
+  function wireAddressSplitter(ipId, portId) {
+    var ipEl = document.getElementById(ipId);
+    if (!ipEl) return;
+    ipEl.addEventListener('input', function() {
+      splitIpPort(ipId, portId);
+    });
   }
 
   // ===================================================================
@@ -485,6 +517,8 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   // ===================================================================
   // Init: load devices
   // ===================================================================
+  wireAddressSplitter('pair-ip', 'pair-port');
+  wireAddressSplitter('conn-ip', 'conn-port');
   refreshBridgeStatus();
   window.dcRefreshDevices();
 })();
