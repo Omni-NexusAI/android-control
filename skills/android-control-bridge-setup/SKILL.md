@@ -71,8 +71,10 @@ create a current-user scheduled task that starts the host ADB bridge at logon.
 First, explain what will be created:
 
 - a script at `%LOCALAPPDATA%\AndroidControlBridge\start-adb-bridge.ps1`
+- a hidden wrapper at `%LOCALAPPDATA%\AndroidControlBridge\start-adb-bridge-hidden.vbs`
 - a scheduled task named `AndroidControlAdbBridge`
 - the task runs at Windows logon and starts `adb -a -P 5037 start-server`
+  without leaving a visible terminal window
 
 Then run this from the Windows host, replacing `$adb` automatically from
 `where.exe adb`:
@@ -85,6 +87,7 @@ $bridgeDir = Join-Path $env:LOCALAPPDATA "AndroidControlBridge"
 New-Item -ItemType Directory -Force -Path $bridgeDir | Out-Null
 
 $scriptPath = Join-Path $bridgeDir "start-adb-bridge.ps1"
+$vbsPath = Join-Path $bridgeDir "start-adb-bridge-hidden.vbs"
 @"
 `$adb = '$adb'
 if (-not (Test-Path -LiteralPath `$adb)) { exit 1 }
@@ -94,9 +97,14 @@ Start-Sleep -Seconds 1
 Start-Sleep -Seconds 1
 "@ | Set-Content -LiteralPath $scriptPath -Encoding UTF8
 
+@"
+Set shell = CreateObject("WScript.Shell")
+shell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$scriptPath""", 0, False
+"@ | Set-Content -LiteralPath $vbsPath -Encoding ASCII
+
 $action = New-ScheduledTaskAction `
-  -Execute "powershell.exe" `
-  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+  -Execute "wscript.exe" `
+  -Argument "`"$vbsPath`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
@@ -112,7 +120,7 @@ Register-ScheduledTask `
   -Description "Starts Android Control host ADB bridge on logon for Docker containers." `
   -Force | Out-Null
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath
+wscript.exe "$vbsPath"
 ```
 
 Verify persistence setup:
