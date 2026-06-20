@@ -1,16 +1,1 @@
-device: ""
-adb_backend: "auto_host_first"
-adb_host: "host.docker.internal"
-adb_port: 5037
-adb_path: ""
-provider: "ollama"
-default_model: "qwen3.5-35b-a3b"
-model_supports_vision: true
-vision_mode: "fallback"
-tier: "auto"
-max_steps: 30
-stuck_threshold: 3
-step_delay: 2
-max_elements: 40
-auto_intervene: true
-api_base: ""
+§§include(/a0/usr/plugins/droidclaw/default_config.yaml)
