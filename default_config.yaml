@@ -14,3 +14,11 @@ step_delay: 2
 max_elements: 40
 auto_intervene: true
 api_base: ""
+block_all_wired: false
+blocked_devices: []
+tailscale_android_only: true
+tailscale_probe_ports: true
+tailscale_preferred_peers: []
+tailscale_cache_ttl: 30
+tailscale_adb_port: 5555
+tailscale_online_only: true

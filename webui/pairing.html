@@ -32,6 +32,9 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 .dc-device-serial{color:#e0e0e0;font-weight:600;font-size:12px}
 .dc-device-detail{color:#888;font-size:11px;margin-top:2px}
 .dc-empty{color:#555;text-align:center;padding:20px;font-size:12px}
+.dc-pill{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;font-size:10px;background:#0f3460;color:#8ab4f8}
+.dc-pill.ok{background:rgba(46,204,113,.15);color:#2ecc71}
+.dc-pill.warn{background:rgba(233,169,69,.16);color:#f0c36a}
 .dc-input-row{display:flex;gap:8px}
 .dc-input-row .dc-input{flex:1}
 .dc-input-row .dc-input:last-child{max-width:120px}
@@ -46,6 +49,8 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 .dc-bridge-detail{font-size:12px;color:inherit;opacity:.9}
 .dc-bridge-prompt{margin-top:8px;padding:8px;border-radius:6px;background:rgba(0,0,0,.22);color:#fff;font-family:monospace;font-size:11px;line-height:1.4}
 .dc-btn[disabled]{opacity:.45;cursor:not-allowed}
+.dc-copy-btn{padding:4px 10px;font-size:11px;background:#0f3460;color:#e0e0e0;border:none;border-radius:4px;cursor:pointer}
+.dc-copy-btn:hover{background:#1a4a80}
 </style>
 <script src="/plugins/droidclaw/webui/qrcode.js"></script>
 </head>
@@ -115,7 +120,55 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
     <div class="dc-status" id="conn-status"></div>
   </div>
 
-  <!-- Section 4: Connected Devices -->
+  <!-- Section 4: Tailscale Setup -->
+  <div class="dc-section">
+    <div class="dc-section-title">Connect with Tailscale <span style="font-size:10px;color:#888;font-weight:normal;text-transform:none;letter-spacing:0">(optional)</span></div>
+    <div style="font-size:0.75rem; color:#888; margin-bottom:10px;">
+      Connect the A0/container node and the selected phone through the same tailnet, then connect ADB over the phone's Tailscale address.
+    </div>
+    <label class="dc-label">Connected Device</label>
+    <select class="dc-input" id="ts-target-device">
+      <option value="">-- Optional connected device --</option>
+    </select>
+    <label class="dc-label">ADB Port</label>
+    <input type="number" min="1" max="65535" class="dc-input" id="ts-adb-port" value="5555" placeholder="5555">
+    <div class="dc-note">Use 5555 when Android Control enables classic ADB TCP/IP. For Android Wireless debugging, use the connect port shown by Android or discovered from mDNS.</div>
+    <div class="dc-btn-row">
+      <button class="dc-btn dc-btn-primary" id="ts-setup-btn" onclick="window.dcConnectWithTailscale()">Connect with Tailscale</button>
+    </div>
+    <div class="dc-status" id="ts-status"></div>
+
+    <!-- Progress + Results -->
+    <div id="ts-progress" style="display:none;margin-top:10px">
+      <div id="ts-progress-text" style="font-size:11px;color:#8ab4f8;margin-bottom:8px"></div>
+      <div id="ts-auth-display" style="display:none">
+        <div style="font-size:11px;color:#888;margin-bottom:6px">This QR/URL authorizes the Android Control A0/container node on Tailscale. It does not enroll the phone.</div>
+        <canvas id="ts-auth-qr" width="200" height="200" style="background:#fff;border-radius:8px;display:block;margin:0 auto"></canvas>
+        <div style="margin-top:6px;padding:6px 10px;background:#0a0a1a;border-radius:6px;font-family:monospace;font-size:11px;color:#2ecc71;word-break:break-all;text-align:center">
+          <span id="ts-auth-url"></span>
+        </div>
+        <button class="dc-btn dc-btn-sm dc-btn-primary" style="margin-top:4px" onclick="window.dcCopyText(document.getElementById('ts-auth-url').textContent)">Copy URL</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Section 5: Tailscale Remote Devices -->
+  <div class="dc-section">
+    <div class="dc-section-title">Tailscale Remote Devices</div>
+    <div class="dc-note" style="margin-bottom:10px">
+      To use Tailscale, first open the Tailscale app on the target phone and make sure it is signed into the same tailnet.
+      If Android Control is not on the tailnet yet, authorize the A0/container node below, then refresh.
+    </div>
+    <div class="dc-device-list" id="ts-peer-list">
+      <div class="dc-empty">No Tailscale devices found</div>
+    </div>
+    <div class="dc-btn-row">
+      <button class="dc-btn dc-btn-primary" onclick="window.dcRefreshTailscalePeers()">Refresh</button>
+    </div>
+    <div class="dc-status" id="ts-peer-status"></div>
+  </div>
+
+  <!-- Section 6: Connected Devices -->
   <div class="dc-section">
     <div class="dc-section-title">Connected Devices</div>
     <div class="dc-device-list" id="device-list">
@@ -131,9 +184,8 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 <script>
 (function() {
 
-
   // ===================================================================
-  // API helper
+  // API helpers
   // ===================================================================
   var _csrfToken = null;
   var _csrfTokenPromise = null;
@@ -176,6 +228,20 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
     }).then(function(r) { return r.json(); });
   }
 
+  function tsApiCall(body) {
+    return getCsrfToken().then(function(token) {
+      return fetch('/api/plugins/droidclaw/tailscale_status', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': token
+        },
+        body: JSON.stringify(body)
+      });
+    }).then(function(r) { return r.json(); });
+  }
+
   function setStatus(elId, msg, type) {
     var el = document.getElementById(elId);
     if (!el) return;
@@ -200,7 +266,33 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   }
 
   // ===================================================================
-  // Manual Pairing
+  // Copy to clipboard helper
+  // ===================================================================
+  window.dcCopyText = function(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function() {
+        // Brief visual feedback could be added here
+      }).catch(function() {
+        dcFallbackCopy(text);
+      });
+    } else {
+      dcFallbackCopy(text);
+    }
+  };
+
+  function dcFallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
+    document.body.removeChild(ta);
+  }
+
+  // ===================================================================
+  // Manual Pairing (Wireless ADB)
   // ===================================================================
   window.dcPairDevice = function() {
     var endpoint = splitIpPort('pair-ip', 'pair-port');
@@ -236,7 +328,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   };
 
   // ===================================================================
-  // Connect to Device
+  // Connect to Device (Wireless ADB)
   // ===================================================================
   window.dcConnect = function() {
     var endpoint = splitIpPort('conn-ip', 'conn-port');
@@ -273,6 +365,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
         var list = document.getElementById('device-list');
         if (!res.devices || res.devices.length === 0) {
           list.innerHTML = '<div class="dc-empty">No devices connected</div>';
+          updateTailscaleDeviceSelect([]);
           return;
         }
         var html = '';
@@ -288,10 +381,12 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
           html += '</div>';
         }
         list.innerHTML = html;
+        updateTailscaleDeviceSelect(res.devices);
       })
       .catch(function(e) {
         document.getElementById('device-list').innerHTML =
           '<div class="dc-empty">Error loading devices: ' + escHtml(e.message) + '</div>';
+        updateTailscaleDeviceSelect([]);
       });
   };
 
@@ -305,14 +400,96 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
       });
   };
 
+  window.dcRefreshTailscalePeers = function() {
+    var list = document.getElementById('ts-peer-list');
+    if (list) list.innerHTML = '<div class="dc-empty">Checking Tailscale devices...</div>';
+    tsApiCall({action: 'status', port: tailscalePort()})
+      .then(function(res) {
+        renderTailscalePeers((res && res.peers) || [], res && res.tailscale, res && res.auth_url);
+      })
+      .catch(function(e) {
+        if (list) list.innerHTML = '<div class="dc-empty">Error loading Tailscale devices: ' + escHtml(e.message) + '</div>';
+      });
+  };
+
+  function renderTailscalePeers(peers, status, authUrl) {
+    var list = document.getElementById('ts-peer-list');
+    if (!list) return;
+
+    if (!status || !status.logged_in) {
+      var loginHtml = '<div class="dc-empty">Android Control is not connected to Tailscale yet.<br>';
+      loginHtml += 'First make sure the target phone is signed into Tailscale, then authorize this A0/container node.';
+      if (authUrl) {
+        loginHtml += '<br><a href="' + escAttr(authUrl) + '" target="_blank" rel="noopener">Authorize Android Control on Tailscale</a>';
+      }
+      loginHtml += '</div>';
+      list.innerHTML = loginHtml;
+      return;
+    }
+
+    if (!peers || peers.length === 0) {
+      list.innerHTML = '<div class="dc-empty">No Tailscale Android devices found.<br>Open Tailscale on the target phone, confirm it is online in this tailnet, then refresh.</div>';
+      return;
+    }
+
+    var html = '';
+    peers.forEach(function(peer) {
+      var label = peer.dns_name || peer.hostname || peer.ip || 'tailnet device';
+      var connectTarget = (peer.dns_name || peer.hostname || peer.ip || '').replace(/\.$/, '');
+      var port = peer.adb_port || tailscalePort();
+      var candidates = peer.adb_port_candidates || [];
+      var reachClass = peer.adb_reachable ? 'ok' : 'warn';
+      var reachText = peer.adb_reachable ? 'ADB ready' : (peer.online ? 'ADB not reachable' : 'offline');
+      html += '<div class="dc-device-item">';
+      html += '<div class="dc-device-info">';
+      html += '<div class="dc-device-serial">' + escHtml(label) + '<span class="dc-pill ' + reachClass + '">' + reachText + '</span></div>';
+      html += '<div class="dc-device-detail">' + escHtml(peer.ip || '') + ':' + escHtml(String(port));
+      if (peer.adb_port_source) html += ' &bull; ' + escHtml(peer.adb_port_source);
+      html += peer.online ? ' &bull; online' : ' &bull; offline';
+      if (peer.os) html += ' &bull; ' + escHtml(peer.os);
+      if (candidates.length > 1) html += '<br>Checked ports: ' + escHtml(candidates.join(', '));
+      if (peer.online && !peer.adb_reachable) html += '<br>ADB is not reachable. Enable Allow incoming connections in Tailscale and verify this ADB port.';
+      if (!peer.online) html += '<br>Open Tailscale on this phone and wait for it to show online, then refresh.';
+      html += '</div></div>';
+      html += '<button class="dc-btn dc-btn-primary dc-btn-sm" data-ts-host="' + escAttr(connectTarget) + '" data-ts-port="' + escAttr(String(port)) + '" onclick="window.dcConnectTailscalePeer(this.dataset.tsHost, Number(this.dataset.tsPort || window.dcTailscalePort()))"' + (peer.online ? '' : ' disabled') + '>Connect ADB</button>';
+      html += '</div>';
+    });
+    list.innerHTML = html;
+  }
+
+  window.dcConnectTailscalePeer = function(hostname, port) {
+    if (!hostname) {
+      setStatus('ts-peer-status', 'Tailscale peer address is missing', 'err');
+      return;
+    }
+    var connectPort = port || tailscalePort();
+    setStatus('ts-peer-status', 'Connecting to ' + hostname + ':' + connectPort + '...', 'info');
+    tsApiCall({action: 'connect', hostname: hostname, port: connectPort})
+      .then(function(res) {
+        if (res.success) {
+          setStatus('ts-peer-status', res.message || 'Connected over Tailscale.', 'ok');
+          setTimeout(function() {
+            window.dcRefreshDevices();
+            window.dcRefreshTailscalePeers();
+          }, 500);
+        } else {
+          setStatus('ts-peer-status', res.message || 'Tailscale ADB connection failed. Enable ADB TCP/IP on the device and try again.', 'err');
+          window.dcRefreshTailscalePeers();
+        }
+      })
+      .catch(function(e) {
+        setStatus('ts-peer-status', 'Connection error: ' + e.message, 'err');
+      });
+  };
+
   function escHtml(s) {
     var d = document.createElement('div');
-    d.textContent = s;
+    d.textContent = s == null ? '' : String(s);
     return d.innerHTML;
   }
 
   function escAttr(s) {
-    return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function wireAddressSplitter(ipId, portId) {
@@ -324,7 +501,120 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   }
 
   // ===================================================================
-    // ===================================================================
+  // Tailscale Setup
+  // ===================================================================
+  function updateTailscaleDeviceSelect(devices) {
+    var select = document.getElementById('ts-target-device');
+    var setupBtn = document.getElementById('ts-setup-btn');
+    if (!select) return;
+    select.innerHTML = '<option value="">-- Optional connected device --</option>';
+    if (devices && devices.length > 0) {
+      devices.forEach(function(d) {
+        var opt = document.createElement('option');
+        opt.value = d.serial || d.address || '';
+        opt.textContent = (d.model || d.serial || 'device') + (d.serial ? ' (' + d.serial + ')' : '');
+        select.appendChild(opt);
+      });
+      select.disabled = false;
+    } else {
+      select.disabled = true;
+    }
+    if (setupBtn) setupBtn.disabled = false;
+  }
+
+  function renderTailscaleAuth(authUrl) {
+    var authDisplay = document.getElementById('ts-auth-display');
+    var urlEl = document.getElementById('ts-auth-url');
+    if (!authDisplay || !urlEl || !authUrl) return false;
+
+    authDisplay.style.display = 'block';
+    urlEl.textContent = authUrl;
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData(authUrl);
+      qr.make();
+      var canvas = document.getElementById('ts-auth-qr');
+      var ctx = canvas.getContext('2d');
+      var modules = qr.getModuleCount();
+      var cellSize = Math.floor(canvas.width / modules);
+      var offset = Math.floor((canvas.width - cellSize * modules) / 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000000';
+      for (var r = 0; r < modules; r++) {
+        for (var c = 0; c < modules; c++) {
+          if (qr.isDark(r, c)) {
+            ctx.fillRect(offset + c * cellSize, offset + r * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+    } catch(e) {}
+    return true;
+  }
+
+  function selectedTailscaleDevice() {
+    var serial = document.getElementById('ts-target-device').value;
+    if (!serial) {
+      return '';
+    }
+    return serial;
+  }
+
+  function tailscalePort() {
+    var el = document.getElementById('ts-adb-port');
+    var port = Number(el && el.value ? el.value : 5555);
+    if (!port || port < 1 || port > 65535) {
+      port = 5555;
+      if (el) el.value = '5555';
+    }
+    return port;
+  }
+  window.dcTailscalePort = tailscalePort;
+
+  window.dcConnectWithTailscale = function() {
+    var btn = document.getElementById('ts-setup-btn');
+    var progress = document.getElementById('ts-progress');
+    var progressText = document.getElementById('ts-progress-text');
+    var authDisplay = document.getElementById('ts-auth-display');
+    var serial = selectedTailscaleDevice();
+    var port = tailscalePort();
+
+    if (btn) btn.disabled = true;
+    progress.style.display = 'block';
+    authDisplay.style.display = 'none';
+    progressText.textContent = serial ?
+      'Opening Tailscale, requesting ADB TCP/IP, and checking tailnet peers...' :
+      'Checking Android Control Tailscale auth and remote peer ADB ports...';
+    setStatus('ts-status', 'Working...', 'info');
+
+    tsApiCall({action: 'setup_connect', serial: serial, port: port}).then(function(res) {
+      if (res.auth_url) {
+        renderTailscaleAuth(res.auth_url);
+      }
+      if (res.steps && res.steps.length) {
+        progressText.textContent = res.steps.join(' ');
+      } else {
+        progressText.textContent = res.message || '';
+      }
+      if (res.success) {
+        setStatus('ts-status', res.message || 'Connected over Tailscale.', 'ok');
+        window.dcRefreshDevices();
+      } else if (res.auth_required) {
+        setStatus('ts-status', res.message || 'Authorize Android Control on Tailscale, then run this again.', 'info');
+      } else {
+        setStatus('ts-status', res.message || 'Tailscale setup did not complete.', 'err');
+      }
+      window.dcRefreshTailscalePeers();
+    }).catch(function(e) {
+      setStatus('ts-status', 'Error: ' + e.message, 'err');
+    }).finally(function() {
+      if (btn) btn.disabled = false;
+    });
+  };
+
+  // ===================================================================
+  // Bridge Status
+  // ===================================================================
   var _qrPollTimer = null;
   var _bridgeStatus = null;
 
@@ -378,9 +668,8 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
     qrBtn.disabled = !(status && status.qr_ready);
   }
 
-
   // ===================================================================
-  // QR Code Pairing with Server Status
+  // QR Code Pairing (Wireless ADB)
   // ===================================================================
   window.dcStartQRPairing = function() {
     if (_bridgeStatus && !_bridgeStatus.qr_ready) {
@@ -393,7 +682,6 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
         if (res.success) {
           document.getElementById('qr-display').style.display = 'block';
           document.getElementById('qr-controls').classList.add('dc-qr-active');
-          // Draw QR on canvas using qrcode-generator library
           var qr = qrcode(0, 'M');
           qr.addData(res.qr_content);
           qr.make();
@@ -412,12 +700,10 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
               }
             }
           }
-          // Show credentials
           var creds = 'Service: ' + escHtml(res.service_name) + '  |  Password: ' + escHtml(res.password);
           document.getElementById('qr-creds').textContent = creds;
           document.getElementById('qr-ips').textContent = 'ADB backend: ' + (res.adb_backend || 'auto');
           setStatus('qr-status', 'Scan the QR code. Android Control will discover, pair, and connect to the phone.', 'ok');
-          // Start polling for pairing status
           startPairingPoll();
         } else {
           if (res.capabilities) updateBridgeBanner(res.capabilities);
@@ -445,7 +731,6 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
           statusEl.textContent = formatQrPhase(res) + ' ADB backend: ' + (res.adb_backend || 'auto') + '. ' + remaining + 's remaining';
           statusEl.style.display = 'block';
         } else if (res.result) {
-          // Server finished
           stopPairingPoll();
           if (res.result === 'connected') {
             statusEl.textContent = 'Connected: ' + escHtml(res.device_serial || res.connect_addr || 'device');
@@ -466,7 +751,6 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
             statusEl.style.borderColor = 'rgba(233,69,96,0.25)';
             setStatus('qr-status', 'Pairing failed: ' + (res.message || res.result), 'err');
           }
-          // Refresh device list to show newly paired device
           window.dcRefreshDevices();
         }
       }).catch(function() {});
@@ -515,12 +799,13 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
   };
 
   // ===================================================================
-  // Init: load devices
+  // Init
   // ===================================================================
   wireAddressSplitter('pair-ip', 'pair-port');
   wireAddressSplitter('conn-ip', 'conn-port');
   refreshBridgeStatus();
   window.dcRefreshDevices();
+  window.dcRefreshTailscalePeers();
 })();
 </script>
 </body>

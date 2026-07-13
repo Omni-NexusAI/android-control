@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +106,80 @@ def _load_config() -> dict:
     if isinstance(configured, dict):
         merged.update({key: value for key, value in configured.items() if key != "defaults"})
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Device blocking / filtering
+# ---------------------------------------------------------------------------
+
+def _save_config_field(key: str, value) -> None:
+    """Persist a single config field to the plugin's config.json."""
+    import json
+    config_path = _PLUGIN_DIR / "config.json"
+    try:
+        existing = {}
+        if config_path.exists():
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        existing[key] = value
+        config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except Exception as exc:
+        import logging
+        logging.getLogger("droidclaw").warning(f"Failed to save config field {key}: {exc}")
+
+
+def _is_wired_device(device: AdbDevice) -> bool:
+    """Return True if device is a wired/USB connection (no IP address)."""
+    return not device.ip
+
+
+def _is_device_blocked(device: AdbDevice, config: dict | None = None) -> bool:
+    """Check if a device should be blocked from discovery/streaming."""
+    cfg = config if config is not None else _load_config()
+    if bool(cfg.get("block_all_wired", False)) and _is_wired_device(device):
+        return True
+    blocked_serials = set(cfg.get("blocked_devices", []) or [])
+    serials_to_check = {device.serial}
+    if device.aliases:
+        serials_to_check.update(device.aliases)
+    return bool(serials_to_check & blocked_serials)
+
+
+def block_device(serial: str) -> dict:
+    """Add a device serial to the blocked list."""
+    cfg = _load_config()
+    blocked = list(cfg.get("blocked_devices", []) or [])
+    if serial not in blocked:
+        blocked.append(serial)
+        _save_config_field("blocked_devices", blocked)
+    return {"success": True, "blocked_devices": blocked, "message": f"Blocked {serial}"}
+
+
+def unblock_device(serial: str) -> dict:
+    """Remove a device serial from the blocked list."""
+    cfg = _load_config()
+    blocked = list(cfg.get("blocked_devices", []) or [])
+    blocked = [s for s in blocked if s != serial]
+    _save_config_field("blocked_devices", blocked)
+    return {"success": True, "blocked_devices": blocked, "message": f"Unblocked {serial}"}
+
+
+def set_block_all_wired(enabled: bool) -> dict:
+    """Toggle blocking all wired/USB devices."""
+    _save_config_field("block_all_wired", bool(enabled))
+    return {
+        "success": True,
+        "block_all_wired": bool(enabled),
+        "message": f"Block all wired devices {'enabled' if enabled else 'disabled'}",
+    }
+
+
+def get_block_info() -> dict:
+    """Return current device blocking configuration."""
+    cfg = _load_config()
+    return {
+        "block_all_wired": bool(cfg.get("block_all_wired", False)),
+        "blocked_devices": list(cfg.get("blocked_devices", []) or []),
+    }
 
 
 def _backend_mode(config: Optional[dict] = None) -> str:
@@ -248,6 +324,33 @@ def adb_cmd(args: list[str], device: str | None = None, backend: AdbBackend | No
     return cmd
 
 
+def _adb_subprocess_env(backend: AdbBackend) -> dict:
+    env = os.environ.copy()
+    key_dir = _PLUGIN_DIR / "data" / "adb_keys"
+    key_file = key_dir / "adbkey"
+    if backend.name == "container" and key_file.is_file():
+        env["ADB_VENDOR_KEYS"] = str(key_file)
+        # Some platform-tools builds only load the standard HOME key when they
+        # launch the ADB server. Keep it synchronized with the trusted runtime
+        # key without ever placing key material in the repository.
+        try:
+            standard_dir = Path.home() / ".android"
+            standard_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            standard_key = standard_dir / "adbkey"
+            if not standard_key.exists() or standard_key.read_bytes() != key_file.read_bytes():
+                shutil.copy2(key_file, standard_key)
+                standard_key.chmod(0o600)
+            public_key = key_dir / "adbkey.pub"
+            if public_key.is_file():
+                standard_public = standard_dir / "adbkey.pub"
+                if not standard_public.exists() or standard_public.read_bytes() != public_key.read_bytes():
+                    shutil.copy2(public_key, standard_public)
+                    standard_public.chmod(0o644)
+        except OSError:
+            pass
+    return env
+
+
 def _extract_ip_port(value: str) -> tuple[str, str]:
     match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?", value or "")
     if not match:
@@ -372,7 +475,31 @@ def canonical_devices(backend: AdbBackend | None = None) -> list[AdbDevice]:
         else:
             existing.aliases = sorted(existing_aliases)
 
-    return list(grouped.values())
+    # Merge Tailscale peers when the container node is on a tailnet. This is
+    # intentionally not gated by tailscale_enabled; quick-connect should remain
+    # visible and self-describing by default.
+    config = _load_config()
+    try:
+        from usr.plugins.droidclaw.helpers.tailscale_discovery import get_tailscale_devices_for_canonical
+        ts_devices = get_tailscale_devices_for_canonical(config)
+        for ts_dev in ts_devices:
+            existing = None
+            for key, dev in grouped.items():
+                if dev.ip == ts_dev.ip:
+                    existing = dev
+                    break
+            if existing:
+                existing_aliases = set(existing.aliases or [])
+                existing_aliases.update(ts_dev.aliases or [])
+                existing.aliases = sorted(existing_aliases)
+            else:
+                grouped[f"tailscale:{ts_dev.ip}"] = ts_dev
+    except Exception:
+        pass  # Graceful degradation
+
+    # Filter out blocked devices
+    result = [device for device in grouped.values() if not _is_device_blocked(device, config)]
+    return result
 
 
 def resolve_device(device: str | None = None, backend: AdbBackend | None = None) -> dict:
@@ -478,13 +605,31 @@ def run_adb_result(
     resolve: bool = True,
 ) -> dict:
     selected = backend or select_backend()
-    resolution = resolve_device(device, selected) if resolve and device is not None else {
-        "requested_device": device or "",
-        "resolved_device": device or "",
-        "resolved": bool(device) if device is not None else True,
-        "reason": "raw" if device else "none",
-        "device": None,
-    }
+    forwarded_serial = ""
+    if device:
+        try:
+            from usr.plugins.droidclaw.helpers.tailscale_discovery import forwarded_adb_serial
+            forwarded_serial = forwarded_adb_serial(device)
+        except Exception:
+            forwarded_serial = ""
+
+    if forwarded_serial:
+        selected = select_backend("container")
+        resolution = {
+            "requested_device": device or "",
+            "resolved_device": forwarded_serial,
+            "resolved": True,
+            "reason": "tailscale_forward",
+            "device": None,
+        }
+    else:
+        resolution = resolve_device(device, selected) if resolve and device is not None else {
+            "requested_device": device or "",
+            "resolved_device": device or "",
+            "resolved": bool(device) if device is not None else True,
+            "reason": "raw" if device else "none",
+            "device": None,
+        }
     resolved_device = resolution.get("resolved_device") or None
     if resolve and device is not None and not resolution.get("resolved"):
         return {
@@ -508,6 +653,7 @@ def run_adb_result(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
+            env=_adb_subprocess_env(selected),
         )
     except FileNotFoundError:
         message = f"ADB client was not found at command path: {cmd[0] if cmd else 'adb'}"
@@ -563,13 +709,31 @@ async def run_adb_async(
     resolve: bool = True,
 ) -> dict:
     selected = backend or select_backend()
-    resolution = resolve_device(device, selected) if resolve and device is not None else {
-        "requested_device": device or "",
-        "resolved_device": device or "",
-        "resolved": bool(device) if device is not None else True,
-        "reason": "raw" if device else "none",
-        "device": None,
-    }
+    forwarded_serial = ""
+    if device:
+        try:
+            from usr.plugins.droidclaw.helpers.tailscale_discovery import forwarded_adb_serial
+            forwarded_serial = forwarded_adb_serial(device)
+        except Exception:
+            forwarded_serial = ""
+
+    if forwarded_serial:
+        selected = select_backend("container")
+        resolution = {
+            "requested_device": device or "",
+            "resolved_device": forwarded_serial,
+            "resolved": True,
+            "reason": "tailscale_forward",
+            "device": None,
+        }
+    else:
+        resolution = resolve_device(device, selected) if resolve and device is not None else {
+            "requested_device": device or "",
+            "resolved_device": device or "",
+            "resolved": bool(device) if device is not None else True,
+            "reason": "raw" if device else "none",
+            "device": None,
+        }
     resolved_device = resolution.get("resolved_device") or None
     if resolve and device is not None and not resolution.get("resolved"):
         return {
@@ -591,6 +755,7 @@ async def run_adb_async(
             stdin=asyncio.subprocess.PIPE if input_text is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_adb_subprocess_env(selected),
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(input=input_text.encode() if input_text is not None else None),
@@ -659,6 +824,14 @@ def diagnostics() -> dict:
     except Exception as exc:
         services = str(exc)
 
+    ts_diag = {}
+    if config.get("tailscale_enabled", False):
+        try:
+            from usr.plugins.droidclaw.helpers.tailscale_discovery import tailscale_diagnostics
+            ts_diag = tailscale_diagnostics()
+        except Exception:
+            ts_diag = {"installed": False, "running": False}
+
     return {
         "mode": _backend_mode(config),
         "selected": selected.name,
@@ -674,4 +847,5 @@ def diagnostics() -> dict:
         "container_available": container_ok,
         "container_message": container_message,
         "mdns_services": services,
+        "tailscale": ts_diag,
     }
