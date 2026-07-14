@@ -1,6 +1,6 @@
 # Android Control
 
-Android Control is an Agent Zero plugin for controlling Android devices through ADB. It provides device discovery, wireless pairing, screenshot capture, direct Android actions, and agent-guided task execution from the Agent Zero UI.
+Android Control is an Agent Zero plugin for controlling Android devices through ADB. It provides USB and wireless device discovery, wireless pairing, Tailscale remote connection support, screenshot capture, direct Android actions, and agent-guided task execution from the Agent Zero UI.
 
 ## What makes Android Control useful?
 
@@ -19,7 +19,7 @@ That can reduce the need to build or install a dedicated MCP for every service. 
 2. Connect a device:
    - **USB ADB:** plug the device into the Agent Zero host, accept the Android RSA prompt, then refresh devices in Android Control.
    - **Wireless pairing:** open Android's Wireless debugging screen, choose pair by code or QR/manual details, then use **Pair New Device** from the Android Control panel.
-   - **Tailscale remote device:** open the Tailscale Android app on the target phone and sign it into the same tailnet. If Android Control's A0/container node is not on the tailnet yet, Android Control shows an auth URL or QR code for authorizing that container node. Once both are online, use **Connect with Tailscale** to request classic ADB TCP/IP on the selected port, or use the Wireless debugging connect port discovered from ADB mDNS.
+   - **Tailscale remote device:** open the Tailscale Android app on the target phone and join the same tailnet first. If Android Control's A0/container node is not on the tailnet yet, Android Control shows an auth URL or QR code for authorizing the A0/container node. That QR or URL does not enroll the phone into Tailscale. Once both sides are online, use **Connect with Tailscale**. Android Control can either request classic ADB TCP/IP on the selected port, usually `5555`, or use the actual Wireless debugging connect port discovered from ADB mDNS when the phone is already advertising one.
    - **Host ADB server:** if ADB is already running outside the Agent Zero container, set Android Control to use the host ADB endpoint, usually `host.docker.internal:5037`.
 
 3. Start using Android Control:
@@ -30,8 +30,10 @@ That can reduce the need to build or install a dedicated MCP for every service. 
 
 ## Features
 
+- USB, wireless ADB, and Tailscale remote-device connection workflows
 - Wireless ADB pairing and reconnect workflows
-- Tailscale remote-device discovery and ADB connection over a tailnet with dynamic ADB port probing
+- Tailscale remote-device discovery with online or offline and ADB-ready status
+- Tailscale ADB connection over a tailnet with dynamic ADB port probing
 - Device selector with connected-device status
 - Control panel with quick actions, screenshots, task launch, and workflow controls
 - Direct ADB command API for focused actions
@@ -48,10 +50,22 @@ Important settings:
 - `adb_host` / `adb_port`: host ADB server endpoint when `adb_backend` is set to `host`.
 - `adb_path`: optional absolute path to an `adb` client. Leave empty to use PATH, bundled plugin-owned platform-tools, or common Android SDK locations.
 - `tailscale_adb_port`: default classic ADB TCP/IP port to request when Android Control runs `adb tcpip`. `5555` is the conventional default, but Android Wireless debugging may advertise a different connect port and Android Control probes discovered mDNS ports too.
+- `tailscale_android_only`: when enabled, limits Tailscale peer discovery to Android devices.
+- `tailscale_online_only`: when enabled, limits the peer list to devices that are currently online in the tailnet.
+- `tailscale_probe_ports`: controls whether Android Control probes discovered Tailscale peers for reachable ADB ports before offering quick-connect guidance.
+- `tailscale_cache_ttl`: cache lifetime, in seconds, for discovered Tailscale peer state.
+- `tailscale_preferred_peers`: optional allowlist for narrowing the Tailscale peer list to specific devices or hostnames.
 - `device`: optional preferred Android device id.
 - `provider`, `default_model`, `api_base`: plugin-local model provider, model name, and API endpoint for Android Control task execution.
 - `model_supports_vision` / `vision_mode`: controls whether screenshots can be used by the task loop and how vision should be handled.
 - `max_steps`, `step_delay`, `stuck_threshold`, `max_elements`, `auto_intervene`: task loop limits and safety controls.
+
+## Tailscale Notes
+
+- Put the phone on the tailnet through the Tailscale Android app before using **Connect with Tailscale**.
+- If Android Control is not yet on the tailnet, the plugin can show an auth URL or QR code for the A0/container node.
+- The Android Control auth URL or QR code authorizes the A0/container node only. It does not pair or enroll the phone.
+- If a phone is online in Tailscale but ADB is not reachable, Android Control will report that separately so you can enable classic ADB TCP/IP, confirm the Wireless debugging connect port, or allow incoming Tailscale connections on the phone.
 
 ## Task Modes
 
