@@ -29,9 +29,12 @@ def _status(input: dict) -> dict:
     configured_device = cfg.get("device", "")
     target_device = configured_device if requested_device is None else (requested_device or "")
     backend = select_backend()
+    # light=True is the panel's periodic poll: cached device list only, no
+    # diagnostics or bridge probes (those spawn many adb processes).
+    light = bool(input.get("light"))
 
-    devices = [device.to_dict() for device in canonical_devices(backend, wait_tailscale=True)]
-    mdns_services = [service.to_dict() for service in list_mdns_services(backend)]
+    devices = [device.to_dict() for device in canonical_devices(backend, wait_tailscale=not light)]
+    mdns_services = [] if light else [service.to_dict() for service in list_mdns_services(backend)]
     resolution = resolve_device(target_device, backend)
 
     active_device = resolution.get("device")
@@ -44,6 +47,23 @@ def _status(input: dict) -> dict:
             active_device = auto_resolution.get("device")
         else:
             active_device = None
+
+    if light:
+        return {
+            "devices": devices,
+            "active_device": active_device,
+            "focused_device": active_device,
+            "focused_available": focused_available,
+            "configured_device": configured_device,
+            "configured_available": configured_available,
+            "requested_device": target_device,
+            "resolved_device": active_device.get("serial") if active_device else "",
+            "device_resolution": resolution,
+            "adb_backend": backend.name,
+            "adb_backend_message": backend.message,
+            "connected": active_device is not None,
+            "light": True,
+        }
 
     capabilities = bridge_capabilities(force=False)
 

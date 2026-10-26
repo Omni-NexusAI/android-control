@@ -721,6 +721,9 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
     if (statusEl) statusEl.style.display = 'block';
 
     _qrPollTimer = setInterval(function() {
+      // The pairing modal was closed: stop polling (the server-side pairing
+      // window still times out on its own).
+      if (!document.querySelector('.dc-pairing-container')) { stopPairingPoll(); return; }
       apiCall({action: 'pairing_status'}).then(function(res) {
         if (!res.success) return;
         var statusEl = document.getElementById('qr-server-status');

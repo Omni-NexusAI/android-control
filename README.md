@@ -25,7 +25,8 @@ That can reduce the need to build or install a dedicated MCP for every service. 
 3. Start using Android Control:
    - Open the Android Control panel from Agent Zero.
    - Select a connected device.
-   - Use quick actions such as Wake, Home, Back, Recents, Screenshot, and Dump.
+   - Watch and control the live preview, or pop it out into a floating window.
+   - Use quick actions such as Wake, Home, Back, Recents, Screenshot, and Dump (lists the on-screen elements).
    - Run an Android task when you want the agent to operate apps or repeat a workflow.
 
 ## Features
@@ -77,6 +78,14 @@ Android Control keeps the ADB connection fast and self-healing:
 - One stream per phone is shared by every open viewer and stops automatically 15 seconds after the last viewer closes.
 - The preview is interactive: click to tap, hold to long-press, drag to swipe, plus Back / Home / Recents buttons. While a stream is live, input goes through scrcpy's control channel (lowest latency); otherwise through `adb shell input`. Input from the preview is captured by an active workflow recording.
 - If the browser lacks WebCodecs or the stream cannot start, the preview falls back to downscaled JPEG screenshots in a single request per frame (typically 1-5 fps, limited by the phone's screenshot speed).
+
+## Pop-out Screen
+
+Press **Pop out** in the preview toolbar to turn the phone screen into a small floating window over Agent Zero and close the big panel, so you can watch the phone while the chat runs.
+
+- Drag the title bar to move it and the corner grip to resize it; position, size and frame rate are remembered, and the window comes back after a page reload.
+- It is fully interactive (tap, long-press, swipe, Back / Home / Recents) and has its own FPS selector.
+- **⤢** returns to the full Android Control panel; **✕** closes the window. Streaming pauses while the browser tab is hidden.
 
 ## Vision
 
