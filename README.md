@@ -82,6 +82,13 @@ Android Control uses a "set-of-marks" approach so screenshots add information in
 - If the model or endpoint rejects images, the run continues text-only and the summary says so.
 - The main Agent Zero agent can use `adb_screen` mode `annotated` to get the numbered list plus the marked screenshot (to open with `vision_load`) and then `adb_tools` `tap` with `"element": N`.
 
+## Workflows (record once, replay without an LLM)
+
+- **Record from the panel:** name the workflow, press **Record**, then drive the phone with the quick actions, the agent, or any Android Control tool. Every input sent to that phone is captured. Press **Stop & Save**.
+- **Record from the agent:** `droidclaw_workflow` action `record_start` / `record_stop`, or simply run `droidclaw_run` with `"record_as": "<name>"`. A completed run is saved and actions that changed nothing are left out.
+- **Replay:** **Play** in the panel (live per-step progress) or `droidclaw_workflow` action `play`. Each tap re-finds its element by resource id, text and description, waits up to 8 seconds for it to appear, and taps its current position, so replays survive layout shifts and different screen sizes. Steps without an identifiable element are scaled to the target screen. Playback stops at the first failed step unless `continue_on_error` is set.
+- Workflows are stored as JSON in `data/workflows/`. The old "saved prompts" list in the panel is still available under **Run Task > Saved prompts**.
+
 ## Multiple Phones
 
 Android Control can drive several phones at the same time, for example one subordinate agent per phone.
@@ -103,7 +110,7 @@ Android Control can drive several phones at the same time, for example one subor
 - **Auto:** Android Control chooses the best route based on the task prompt and current context.
 - **Tier 1:** Uses the plugin-local model configuration only. This is intended for local models or a separately configured Android Control model.
 - **Tier 2:** Uses the current Agent Zero model profile when you want Android Control to follow the main A0 model configuration.
-- **Workflow path:** Intended for recorded and repeatable tasks that can run without any LLM involved. This path is still work in progress and may have bugs while the recording and replay behavior is tested.
+- **Workflows:** recorded, repeatable tasks that replay without any LLM (see below).
 
 ## Planned Updates
 

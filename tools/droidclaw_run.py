@@ -201,7 +201,7 @@ class DroidClawRun(Tool):
                 break_loop=False,
             )
 
-        from usr.plugins.droidclaw.helpers import action_validator, execution_loop, ui_parser
+        from usr.plugins.droidclaw.helpers import action_validator, execution_loop, ui_parser, workflow_engine
         from usr.plugins.droidclaw.helpers.llm_client import LLMClient
 
         llm_client = LLMClient(
@@ -229,7 +229,20 @@ class DroidClawRun(Tool):
             fn_wake_device=_wake_device,
             fn_screenshot=_screenshot_png,
             fn_validate_action=action_validator.validate_action,
+            # Feeds any active workflow recording on this device (no-op otherwise).
+            on_action=lambda action, raw, executed: workflow_engine.record_canonical(device, action, raw, executed),
+            on_no_change=lambda count: workflow_engine.drop_last_steps(device, count),
         )
+
+        record_as = str(self.args.get("record_as") or "").strip()
+        recording_note = ""
+        if record_as:
+            started = await asyncio.to_thread(
+                workflow_engine.start_recording, record_as, device, goal, "droidclaw_run"
+            )
+            if not started.get("success"):
+                recording_note = f"Workflow not recorded: {started.get('message')}"
+                record_as = ""
 
         logger.info(
             "Starting Android Control loop: device=%s, provider=%s, model=%s, vision=%s, goal=%s",
@@ -237,6 +250,7 @@ class DroidClawRun(Tool):
         )
 
         renew = asyncio.create_task(self._hold_device(device))
+        result = None
         try:
             result = await loop.run(goal)
         except Exception as exc:
@@ -247,8 +261,23 @@ class DroidClawRun(Tool):
             )
         finally:
             renew.cancel()
+            if record_as and result is None:
+                workflow_engine.stop_recording(device, save=False)
+
+        if record_as:
+            if result.get("status") == "completed":
+                saved = workflow_engine.stop_recording(device, save=True)
+                recording_note = (
+                    f"Saved as workflow '{record_as}' ({saved.get('steps', 0)} steps); replay it without an LLM "
+                    f"with droidclaw_workflow action play." if saved.get("success") else f"Workflow not saved: {saved.get('message')}"
+                )
+            else:
+                workflow_engine.stop_recording(device, save=False)
+                recording_note = f"Workflow '{record_as}' not saved because the run did not complete."
 
         summary = execution_loop.format_result_summary(result, goal)
+        if recording_note:
+            summary += "\n" + recording_note
         return Response(message=f"Device: {device}\n{summary}", break_loop=False)
 
     async def _hold_device(self, device: str) -> None:

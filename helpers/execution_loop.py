@@ -226,6 +226,8 @@ class ExecutionLoop:
         fn_wake_device=None,
         fn_screenshot=None,
         fn_validate_action=None,
+        on_action=None,
+        on_no_change=None,
         **_legacy,
     ):
         self.device = device
@@ -243,6 +245,11 @@ class ExecutionLoop:
         self._wake_device = fn_wake_device
         self._screenshot = fn_screenshot
         self._validate_action = fn_validate_action or _default_validate
+        # on_action(action, raw_elements, executed) after each successful
+        # action; used to record a run as a replayable workflow.
+        self._on_action = on_action
+        self._on_no_change = on_no_change
+        self._last_exec = {}
 
         self.step_log = []
         self.history = []
@@ -358,6 +365,7 @@ class ExecutionLoop:
     async def run(self, goal: str) -> dict:
         start_time = time.time()
         prev_obs = None
+        prev_action_recorded = 0
         warning = ""
 
         for step in range(1, self.max_steps + 1):
@@ -375,6 +383,11 @@ class ExecutionLoop:
                     self.recovery_level = 0
                 else:
                     self.no_change_count += 1
+                    if self._on_no_change and prev_action_recorded:
+                        try:
+                            self._on_no_change(prev_action_recorded)
+                        except Exception:
+                            pass
                     if self.no_change_count >= self.stuck_threshold:
                         warning = await self._handle_stuck(step)
                         obs = await self._observe()
@@ -440,6 +453,12 @@ class ExecutionLoop:
             if description.startswith("error("):
                 prev_obs = None
                 self._mark_last_outcome("failed")
+            prev_action_recorded = 0
+            if not description.startswith("error(") and self._on_action:
+                try:
+                    prev_action_recorded = int(self._on_action(action, obs.raw, dict(self._last_exec)) or 0)
+                except Exception as exc:  # recording must never break a run
+                    logger.debug("on_action hook failed: %s", exc)
             if action_name != "wait" and step < self.max_steps:
                 await asyncio.sleep(self.step_delay)
 
@@ -507,6 +526,11 @@ class ExecutionLoop:
         self.no_change_count = 0
         self.force_look = True
         description = await self._execute_action(recovery, None)
+        if self._on_action and not description.startswith("error("):
+            try:
+                self._on_action(recovery, [], dict(self._last_exec))
+            except Exception:
+                pass
         self.step_log.append({"step": step, "action": "stuck_recovery", "description": description, "reason": label, "elapsed": 0})
         self.history.append(f"{len(self.history) + 1}. (automatic recovery: {label})")
         await asyncio.sleep(self.step_delay)
@@ -536,9 +560,11 @@ class ExecutionLoop:
         """Execute a canonical action via ADB; returns a short description."""
         name = action.get("action", "")
         size = obs.size if obs else getattr(self, "_last_size", (1080, 2400))
+        self._last_exec = {}
         try:
             if name in ("tap", "longpress"):
                 (x, y), el = self._target(action, obs)
+                self._last_exec = {"center": (x, y)}
                 if name == "tap":
                     await self._adb(["shell", "input", "tap", str(x), str(y)])
                 else:
@@ -556,6 +582,7 @@ class ExecutionLoop:
                 if name == "scroll":
                     finger = {"down": "up", "up": "down", "left": "right", "right": "left"}[direction]
                 coords = vision.swipe_vector(finger, size, rect)
+                self._last_exec = {"swipe": coords}
                 await self._adb(["shell", "input", "swipe", *[str(c) for c in coords], "350"])
                 return f"{name} {direction}" + (f" in [{action['element']}]" if rect else "")
 
@@ -564,6 +591,7 @@ class ExecutionLoop:
                 el = None
                 if "element" in action:
                     (x, y), el = self._target(action, obs)
+                    self._last_exec = {"focus": (x, y)}
                     await self._adb(["shell", "input", "tap", str(x), str(y)])
                     await asyncio.sleep(0.4)
                 if action.get("clear"):

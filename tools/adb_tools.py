@@ -4,11 +4,14 @@ from typing import Optional
 from helpers.tool import Tool, Response
 from usr.plugins.droidclaw.helpers.adb_backend import parse_adb_command, run_adb_async
 from usr.plugins.droidclaw.helpers.device_context import DeviceSelectionError, claim, screenshot_path
-from usr.plugins.droidclaw.helpers import vision
+from usr.plugins.droidclaw.helpers import vision, workflow_engine
 from usr.plugins.droidclaw.helpers.ui_parser import dump_ui_xml, parse_ui_xml
 
 
 async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -> str:
+    # While a workflow recording is active on this device, capture input
+    # commands (taps include the element under the finger, read beforehand).
+    step = await workflow_engine.prepare_adb_args(device, cmd) if device else None
     try:
         result = await run_adb_async(cmd, device=device if device is not None else "", timeout=timeout)
     except asyncio.TimeoutError:
@@ -16,6 +19,7 @@ async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -
     if result["returncode"] != 0:
         detail = result["stderr"] or result["stdout"] or result["output"] or "unknown error"
         return f"Error: {detail}"
+    workflow_engine.commit_step(device, step)
     return result["stdout"] or result["stderr"] or "OK"
 
 
