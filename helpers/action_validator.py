@@ -1,171 +1,201 @@
-"""Validate LLM action outputs for droidclaw."""
+"""Normalize and validate LLM action outputs for Android Control.
+
+Models phrase the same intent many ways ("click", "tap_element", "index",
+"coordinates": "540,1200", "app" instead of "package"...). Everything is
+mapped onto one canonical schema here so the executor only handles:
+
+    tap / longpress   {"element": N} or {"x": int, "y": int}
+    type              {"text": str, "element"?: N, "clear"?: bool, "submit"?: bool}
+    swipe             {"direction": up|down|left|right, "element"?: N}   finger direction
+    scroll            {"direction": up|down|left|right, "element"?: N}   content direction
+    press             {"key": home|back|enter|recent|...}
+    launch            {"package": str}
+    wait              {"seconds": float}
+    look              {}                       ask for an annotated screenshot
+    done              {"summary": str}
+    fail              {"reason": str}
+
+Unusable output becomes {"action": "invalid", "error": ...} so the loop can
+tell the model what was wrong instead of silently waiting.
+"""
 
 import logging
+import re
 
 logger = logging.getLogger('droidclaw')
 
-VALID_ACTIONS = {
-    'tap',
-    'longpress',
-    'swipe',
-    'type',
-    'press',
-    'home',
-    'back',
-    'enter',
-    'wait',
-    'scroll_up',
-    'scroll_down',
-    'scroll_left',
-    'scroll_right',
-    'launch',
-    'screenshot',
-    'shell',
-    'screen_dump',
-    'swipe_up',
-    'swipe_down',
-    'swipe_left',
-    'swipe_right',
-    'tap_element',
-    'longpress_element',
-    'scroll_to_text',
-    'scroll_to_id',
-    'clear_text',
-    'select_all',
-    'copy',
-    'paste',
-    'cut',
-    'open_notifications',
-    'open_quick_settings',
-    'open_recent_apps',
-    'power_dialog',
-    'done',
+CANONICAL_ACTIONS = {
+    'tap', 'longpress', 'type', 'swipe', 'scroll', 'press', 'launch', 'wait', 'look', 'done', 'fail',
 }
 
-# Valid directions for swipe action
+# alias -> (canonical action, extra fields)
+_ALIASES = {
+    'click': ('tap', {}),
+    'tap_element': ('tap', {}),
+    'press_element': ('tap', {}),
+    'long_press': ('longpress', {}),
+    'long_click': ('longpress', {}),
+    'longpress_element': ('longpress', {}),
+    'input': ('type', {}),
+    'type_text': ('type', {}),
+    'enter_text': ('type', {}),
+    'write': ('type', {}),
+    'scroll_up': ('scroll', {'direction': 'up'}),
+    'scroll_down': ('scroll', {'direction': 'down'}),
+    'scroll_left': ('scroll', {'direction': 'left'}),
+    'scroll_right': ('scroll', {'direction': 'right'}),
+    'swipe_up': ('swipe', {'direction': 'up'}),
+    'swipe_down': ('swipe', {'direction': 'down'}),
+    'swipe_left': ('swipe', {'direction': 'left'}),
+    'swipe_right': ('swipe', {'direction': 'right'}),
+    'home': ('press', {'key': 'home'}),
+    'back': ('press', {'key': 'back'}),
+    'enter': ('press', {'key': 'enter'}),
+    'key': ('press', {}),
+    'keyevent': ('press', {}),
+    'open_recent_apps': ('press', {'key': 'recent'}),
+    'recents': ('press', {'key': 'recent'}),
+    'open_notifications': ('press', {'key': 'notifications'}),
+    'open_quick_settings': ('press', {'key': 'quick_settings'}),
+    'open_app': ('launch', {}),
+    'start_app': ('launch', {}),
+    'open': ('launch', {}),
+    'sleep': ('wait', {}),
+    'screenshot': ('look', {}),
+    'observe': ('look', {}),
+    'finish': ('done', {}),
+    'finished': ('done', {}),
+    'complete': ('done', {}),
+    'task_complete': ('done', {}),
+    'success': ('done', {}),
+    'give_up': ('fail', {}),
+    'abort': ('fail', {}),
+    'impossible': ('fail', {}),
+}
+
 VALID_DIRECTIONS = {'up', 'down', 'left', 'right'}
 
-# Actions that require coordinates
-COORD_ACTIONS = {'tap', 'longpress', 'tap_element', 'longpress_element'}
-
-# Actions that require a text/string parameter
-TEXT_ACTIONS = {'type', 'scroll_to_text', 'shell'}
-
-# Actions that require a resource_id
-ID_ACTIONS = {'scroll_to_id'}
-
-# Actions that require a direction
-DIRECTION_ACTIONS = {'swipe'}
-
-# Actions that require a package name
-PACKAGE_ACTIONS = {'launch'}
+# Kept for callers that introspect the accepted names.
+VALID_ACTIONS = CANONICAL_ACTIONS | set(_ALIASES)
 
 
-def _sanitize_coordinates(action: dict) -> dict:
-    """Ensure coordinates are exactly 2 integers.
-
-    Parses x/y from the action dict, converting to int and clamping
-    to exactly two values.
-
-    Args:
-        action: Action dict that may contain 'x', 'y' or 'coordinates' keys.
-
-    Returns:
-        Action dict with sanitized 'x' and 'y' as integers.
-    """
-    if 'coordinates' in action:
-        coords = action.pop('coordinates')
-        if isinstance(coords, (list, tuple)) and len(coords) >= 2:
-            try:
-                action['x'] = int(coords[0])
-                action['y'] = int(coords[1])
-            except (ValueError, TypeError):
-                action['x'] = 0
-                action['y'] = 0
-        else:
-            action['x'] = 0
-            action['y'] = 0
-    elif 'x' in action and 'y' in action:
-        try:
-            action['x'] = int(action['x'])
-            action['y'] = int(action['y'])
-        except (ValueError, TypeError):
-            action['x'] = 0
-            action['y'] = 0
-    return action
+def _int(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(round(float(str(value).strip())))
+    except (TypeError, ValueError):
+        return None
 
 
-def _validate_direction(action: dict) -> dict:
-    """Validate direction field for swipe actions.
+def _element(action: dict):
+    for key in ('element', 'index', 'element_id', 'element_index', 'mark', 'target', 'number', 'id'):
+        if key in action:
+            value = action[key]
+            if isinstance(value, str):
+                match = re.fullmatch(r'\s*\[?#?(\d+)\]?\s*', value)
+                if not match:
+                    continue
+                value = match.group(1)
+            number = _int(value)
+            if number is not None:
+                return number
+    return None
 
-    Args:
-        action: Action dict with a 'direction' key.
 
-    Returns:
-        Action dict with validated direction, or 'up' as default.
-    """
-    direction = action.get('direction', 'up')
-    if direction not in VALID_DIRECTIONS:
-        logger.warning("Invalid direction '%s', defaulting to 'up'", direction)
-        action['direction'] = 'up'
-    return action
+def _point(action: dict):
+    if 'x' in action and 'y' in action:
+        x, y = _int(action['x']), _int(action['y'])
+        if x is not None and y is not None:
+            return x, y
+    coords = action.get('coordinates', action.get('coords', action.get('point')))
+    if isinstance(coords, str):
+        parts = re.findall(r'-?\d+(?:\.\d+)?', coords)
+        coords = parts[:2]
+    if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+        x, y = _int(coords[0]), _int(coords[1])
+        if x is not None and y is not None:
+            return x, y
+    return None
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def validate_action(action: dict) -> dict:
-    """Validate and sanitize an action dict from LLM output.
-
-    Checks that the action name is valid, sanitizes coordinates,
-    validates directions, and ensures required fields are present.
-    Falls back to a wait action for unrecognized action names.
-
-    Args:
-        action: Action dict with at minimum an 'action' key.
-
-    Returns:
-        Validated and sanitized action dict.
-    """
+    """Return a canonical action dict (see module docstring)."""
     if not isinstance(action, dict):
-        logger.warning("Action is not a dict, returning wait fallback")
-        return {'action': 'wait', 'reason': 'Invalid action format'}
+        return {'action': 'invalid', 'error': 'response was not a JSON object'}
 
-    action_name = action.get('action', '')
+    raw_name = str(action.get('action') or action.get('type') or action.get('name') or '').strip().lower()
+    raw_name = raw_name.replace('-', '_').replace(' ', '_')
+    name, extra = _ALIASES.get(raw_name, (raw_name, {}))
+    if name not in CANONICAL_ACTIONS:
+        return {
+            'action': 'invalid',
+            'error': f"unknown action '{raw_name or '(missing)'}'; use one of: {', '.join(sorted(CANONICAL_ACTIONS))}",
+        }
 
-    # Validate action name
-    if not action_name or action_name not in VALID_ACTIONS:
-        logger.warning("Invalid action name: '%s'", action_name)
-        return {'action': 'wait', 'reason': 'Invalid action'}
+    result = {'action': name, 'reason': str(action.get('reason') or action.get('thought') or '')[:300]}
+    merged = {**action, **extra}
 
-    result = dict(action)
+    element = _element(merged)
+    point = _point(merged)
 
-    # Sanitize coordinates for tap/longpress actions
-    if action_name in COORD_ACTIONS:
-        result = _sanitize_coordinates(result)
+    if name in ('tap', 'longpress'):
+        if element is not None:
+            result['element'] = element
+        elif point is not None:
+            result['x'], result['y'] = point
+        else:
+            return {'action': 'invalid', 'error': f'{name} needs "element": <number> (or "x" and "y")'}
 
-    # Validate direction for swipe
-    if action_name in DIRECTION_ACTIONS:
-        result = _validate_direction(result)
+    elif name == 'type':
+        text = merged.get('text', merged.get('value', merged.get('content')))
+        if text is None or str(text) == '':
+            return {'action': 'invalid', 'error': 'type needs "text"'}
+        result['text'] = str(text)
+        if element is not None:
+            result['element'] = element
+        result['clear'] = _truthy(merged.get('clear', False))
+        result['submit'] = _truthy(merged.get('submit', merged.get('enter', False)))
 
-    # Check required text field
-    if action_name in TEXT_ACTIONS:
-        if 'text' not in result and 'value' not in result:
-            logger.warning("Action '%s' missing text/value field", action_name)
-            result['text'] = ''
+    elif name in ('swipe', 'scroll'):
+        direction = str(merged.get('direction', '')).strip().lower()
+        if direction not in VALID_DIRECTIONS:
+            return {'action': 'invalid', 'error': f'{name} needs "direction": up, down, left or right'}
+        result['direction'] = direction
+        if element is not None:
+            result['element'] = element
 
-    # Check required resource_id
-    if action_name in ID_ACTIONS:
-        if 'resource_id' not in result and 'id' not in result:
-            logger.warning("Action '%s' missing resource_id field", action_name)
-            result['resource_id'] = ''
+    elif name == 'press':
+        key = merged.get('key', merged.get('keycode', merged.get('button', '')))
+        key = str(key).strip()
+        if not key:
+            return {'action': 'invalid', 'error': 'press needs "key" (home, back, enter, recent, ...)'}
+        result['key'] = key
 
-    # Check required package for launch
-    if action_name in PACKAGE_ACTIONS:
-        if 'package' not in result and 'app' not in result:
-            logger.warning("Action '%s' missing package field", action_name)
-            result['package'] = ''
+    elif name == 'launch':
+        package = str(merged.get('package', merged.get('app', merged.get('package_name', '')))).strip()
+        if not package:
+            return {'action': 'invalid', 'error': 'launch needs "package" (e.g. com.android.settings)'}
+        result['package'] = package
 
-    # Ensure duration/timeout defaults for wait
-    if action_name == 'wait':
-        if 'duration' not in result and 'timeout' not in result:
-            result['duration'] = 1.0
+    elif name == 'wait':
+        seconds = merged.get('seconds', merged.get('duration', merged.get('time', 1)))
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            seconds = 1.0
+        result['seconds'] = min(max(seconds, 0.2), 10.0)
+
+    elif name == 'done':
+        result['summary'] = str(merged.get('summary') or merged.get('result') or merged.get('reason') or '')
+
+    elif name == 'fail':
+        result['reason'] = str(merged.get('reason') or merged.get('summary') or 'Task cannot be completed')
 
     return result

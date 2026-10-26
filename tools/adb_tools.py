@@ -1,11 +1,11 @@
 import asyncio
-import xml.etree.ElementTree as ET
 from typing import Optional
 
 from helpers.tool import Tool, Response
 from usr.plugins.droidclaw.helpers.adb_backend import parse_adb_command, run_adb_async
 from usr.plugins.droidclaw.helpers.device_context import DeviceSelectionError, claim, screenshot_path
-from usr.plugins.droidclaw.helpers.ui_parser import dump_ui_xml
+from usr.plugins.droidclaw.helpers import vision
+from usr.plugins.droidclaw.helpers.ui_parser import dump_ui_xml, parse_ui_xml
 
 
 async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -> str:
@@ -20,19 +20,26 @@ async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -
 
 
 def _escape_for_adb(text: str) -> str:
-    replacements = {
-        " ": "%s",
-        "&": "\\&",
-        ";": "\\;",
-        "|": "\\|",
-        "<": "\\<",
-        ">": "\\>",
-        "(": "\\(",
-        ")": "\\)",
-        '"': '\\"',
-        "'": "\\'",
-    }
-    return "".join(replacements.get(ch, ch) for ch in text)
+    return vision.escape_input_text(text)
+
+
+_SIZES: dict[str, tuple] = {}
+
+
+async def _screen_size(device: str) -> tuple:
+    if device in _SIZES:
+        return _SIZES[device]
+    output = await _run_adb(["shell", "wm", "size"], device)
+    size = (1080, 2400)
+    for line in output.splitlines():
+        if "size" in line:
+            try:
+                w, h = line.split(":")[-1].strip().lower().split("x")
+                size = (int(w), int(h))
+            except ValueError:
+                continue
+    _SIZES[device] = size
+    return size
 
 
 async def _parse_coordinates(coordinates: str) -> tuple:
@@ -44,18 +51,34 @@ async def _parse_coordinates(coordinates: str) -> tuple:
     return int(parts[0]), int(parts[1])
 
 
-async def _handle_tap(coordinates: str, device: Optional[str]) -> str:
+def _element_point(agent, device: str, element) -> tuple:
+    row = vision.recall_element(agent, device, element)
+    if row is None:
+        raise ValueError(
+            f"element {element} is unknown for {device}; read the screen first with adb_screen "
+            "(mode xml or annotated) and use a number from that list"
+        )
+    return int(row["center"][0]), int(row["center"][1])
+
+
+async def _resolve_point(agent, coordinates: str, element, device: str) -> tuple:
+    if element not in (None, ""):
+        return _element_point(agent, device, element)
+    return await _parse_coordinates(coordinates)
+
+
+async def _handle_tap(coordinates: str, device: Optional[str], agent=None, element=None) -> str:
     try:
-        x, y = await _parse_coordinates(coordinates)
+        x, y = await _resolve_point(agent, coordinates, element, device)
     except ValueError as e:
         return f"Error: {e}"
     result = await _run_adb(["shell", "input", "tap", str(x), str(y)], device)
     return f"Tapped ({x}, {y}). {result}" if result != "OK" else f"Tapped ({x}, {y})."
 
 
-async def _handle_longpress(coordinates: str, device: Optional[str]) -> str:
+async def _handle_longpress(coordinates: str, device: Optional[str], agent=None, element=None) -> str:
     try:
-        x, y = await _parse_coordinates(coordinates)
+        x, y = await _resolve_point(agent, coordinates, element, device)
     except ValueError as e:
         return f"Error: {e}"
     result = await _run_adb(
@@ -69,14 +92,9 @@ async def _handle_longpress(coordinates: str, device: Optional[str]) -> str:
 
 
 async def _handle_swipe(direction: str, coordinates: str, device: Optional[str]) -> str:
-    swipe_map = {
-        "up": ("540", "1600", "540", "800"),
-        "down": ("540", "800", "540", "1600"),
-        "left": ("800", "1200", "200", "1200"),
-        "right": ("200", "1200", "800", "1200"),
-    }
-    if direction.lower() in swipe_map:
-        x1, y1, x2, y2 = swipe_map[direction.lower()]
+    if direction and direction.lower() in ("up", "down", "left", "right"):
+        size = await _screen_size(device)
+        x1, y1, x2, y2 = (str(v) for v in vision.swipe_vector(direction.lower(), size))
     elif coordinates:
         try:
             parts = coordinates.split(",")
@@ -117,25 +135,12 @@ async def _handle_launch(package: str, device: Optional[str]) -> str:
     if not package:
         return "Error: package is required for launch action"
     result = await _run_adb(
-        ["shell", "am", "start", "-n", f"{package}/.MainActivity"], device
+        ["shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"],
+        device,
     )
-    fallback = False
-    if "Error" in result or "does not exist" in result:
-        result = await _run_adb(
-            [
-                "shell",
-                "monkey",
-                "-p",
-                package,
-                "-c",
-                "android.intent.category.LAUNCHER",
-                "1",
-            ],
-            device,
-        )
-        fallback = True
-    method = "monkey fallback" if fallback else "am start"
-    return f"Launched {package} ({method}). {result}"
+    if "No activities found" in result or result.startswith("Error"):
+        return f"Error: could not launch {package} (is it installed?). {result}"
+    return f"Launched {package}."
 
 
 async def _handle_shell(command: str, device: Optional[str]) -> str:
@@ -156,48 +161,20 @@ async def _handle_screenshot(device: Optional[str]) -> str:
     return f"Screenshot saved: {filepath} ({size_kb:.1f} KB)"
 
 
-async def _handle_screen_dump(device: Optional[str]) -> str:
+async def _handle_screen_dump(device: Optional[str], agent=None) -> str:
     xml_content = await asyncio.to_thread(dump_ui_xml, device)
     if not xml_content:
         return "Error dumping UI: uiautomator returned no hierarchy (screen may be animating or secure)"
-    try:
-        root = ET.fromstring(xml_content)
-    except ET.ParseError as e:
-        return f"Error parsing UI XML: {e}"
-    elements = []
-    idx = 0
-    for node in root.iter():
-        bounds = node.attrib.get("bounds", "")
-        text_val = node.attrib.get("text", "")
-        desc = node.attrib.get("content-desc", "")
-        clickable = node.attrib.get("clickable", "false")
-        res_id = node.attrib.get("resource-id", "")
-        class_name = node.attrib.get("class", "")
-        label = text_val or desc or ""
-        if not label and not clickable == "true":
-            continue
-        center_x, center_y = "", ""
-        if bounds:
-            try:
-                parts = bounds.replace("][", ",").strip("[]").split(",")
-                x1, y1, x2, y2 = (
-                    int(parts[0]),
-                    int(parts[1]),
-                    int(parts[2]),
-                    int(parts[3]),
-                )
-                center_x = str((x1 + x2) // 2)
-                center_y = str((y1 + y2) // 2)
-            except (ValueError, IndexError):
-                pass
-        click_tag = " [clickable]" if clickable == "true" else ""
-        id_tag = f" id={res_id}" if res_id else ""
-        coord_tag = f" ({center_x},{center_y})" if center_x else ""
-        elements.append(f"[{idx}] {label}{coord_tag}{click_tag}{id_tag}")
-        idx += 1
-    if not elements:
+    raw = parse_ui_xml(xml_content)
+    size = (
+        max((e["rect"][2] for e in raw), default=0),
+        max((e["rect"][3] for e in raw), default=0),
+    )
+    selected = vision.select_elements(raw, 60, size)
+    if not selected:
         return "UI dump empty - no interactive elements found"
-    return "\n".join(elements)
+    vision.remember_elements(agent, device, selected)
+    return f"Screen {size[0]}x{size[1]}. Elements (tap with \"element\": N):\n" + vision.format_elements(selected)
 
 
 class AdbTools(Tool):
@@ -207,6 +184,7 @@ class AdbTools(Tool):
             return Response(message="Error: action is required", break_loop=False)
 
         coordinates = self.args.get("coordinates", "")
+        element = self.args.get("element", None)
         direction = self.args.get("direction", "")
         text = self.args.get("text", "")
         keycode = self.args.get("keycode", "")
@@ -220,8 +198,8 @@ class AdbTools(Tool):
             return Response(message=f"Error: {e}", break_loop=False)
 
         handlers = {
-            "tap": lambda: _handle_tap(coordinates, dev),
-            "longpress": lambda: _handle_longpress(coordinates, dev),
+            "tap": lambda: _handle_tap(coordinates, dev, self.agent, element),
+            "longpress": lambda: _handle_longpress(coordinates, dev, self.agent, element),
             "swipe": lambda: _handle_swipe(direction, coordinates, dev),
             "type": lambda: _handle_type(text, dev),
             "press": lambda: _handle_press(keycode, dev),
@@ -237,7 +215,7 @@ class AdbTools(Tool):
             "launch": lambda: _handle_launch(package, dev),
             "shell": lambda: _handle_shell(command, dev),
             "screenshot": lambda: _handle_screenshot(dev),
-            "screen_dump": lambda: _handle_screen_dump(dev),
+            "screen_dump": lambda: _handle_screen_dump(dev, self.agent),
         }
 
         if action in handlers:

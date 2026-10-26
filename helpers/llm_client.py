@@ -25,6 +25,19 @@ _PROVIDER_URLS = {
 }
 
 
+def _message_text(content) -> str:
+    """Normalize OpenAI-style content (string or list of parts) to text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+        )
+    return str(content)
+
+
 class LLMClient:
     """Async LLM client for OpenAI-compatible chat completions.
 
@@ -96,7 +109,7 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 1024,
+            "max_tokens": 2048,
         }
 
         headers = self._build_headers()
@@ -125,10 +138,14 @@ class LLMClient:
             if not choices:
                 raise RuntimeError("LLM API returned no choices")
 
-            message = choices[0].get("message", {})
-            content = message.get("content", "")
+            message = choices[0].get("message", {}) or {}
+            content = _message_text(message.get("content"))
+            if not content.strip():
+                # Reasoning models sometimes put the whole answer (or run out
+                # of tokens) in a separate reasoning field.
+                content = _message_text(message.get("reasoning_content") or message.get("reasoning"))
 
-            if not content:
+            if not content.strip():
                 raise RuntimeError("LLM API returned empty content")
 
             logger.debug("LLM response: %d chars", len(content))
@@ -158,6 +175,7 @@ class LLMClient:
         messages: list,
         image_base64: str,
         temperature: float = 0.3,
+        mime: str = "image/png",
     ) -> str:
         """Send a chat request with an image attachment for vision models.
 
@@ -183,7 +201,7 @@ class LLMClient:
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/png;base64,{image_base64}",
+                                "url": f"data:{mime};base64,{image_base64}",
                             },
                         },
                     ],

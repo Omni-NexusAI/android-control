@@ -5,19 +5,21 @@ direct android device control via adb for single atomic actions
 actions: tap longpress swipe type press launch home back enter shell screenshot screen_dump
 use for individual precise interactions when you know exactly what to do
 for complex multi-step goals use droidclaw_run instead
+tap/longpress take "element" (number from the latest adb_screen or screen_dump of that phone) or "coordinates" "x,y" in device pixels
+swipe direction is the finger direction and adapts to the screen size
 usage:
 
 ~~~json
 {
     "thoughts": [
-        "Need to tap a specific coordinate on the android device",
-        "I know the exact position from a previous screen dump"
+        "adb_screen listed the Wi-Fi row as element 7",
+        "Tapping by element number hits its exact center"
     ],
     "headline": "Tapping on android device screen",
     "tool_name": "adb_tools",
     "tool_args": {
         "action": "tap",
-        "coordinates": "540,264",
+        "element": 7,
         "device": ""
     }
 }

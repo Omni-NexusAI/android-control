@@ -34,10 +34,11 @@ def test_tool_screenshot_uses_runner(fake_adb, tmp_path, monkeypatch):
     fake_adb.add_device("S1")
     fake_adb.state["screencap_b64"] = base64.b64encode(b"\x89PNG....").decode()
     fake_adb.write()
-    monkeypatch.setattr(adb_screen.os, "makedirs", lambda *a, **k: None)
-    real_join = adb_screen.os.path.join
-    monkeypatch.setattr(adb_screen.os.path, "join", lambda a, *b: real_join(str(tmp_path), *b) if a.startswith("/a0") else real_join(a, *b))
-    message = asyncio.run(adb_screen._take_screenshot("S1"))
+    from usr.plugins.droidclaw.helpers import device_context
+
+    monkeypatch.setattr(device_context, "SCREENSHOT_DIR", str(tmp_path))
+    tool = adb_screen.AdbScreen(None, "adb_screen", None, {"mode": "screenshot", "device": "S1"}, "", None)
+    message = asyncio.run(tool.execute()).message
     assert "Screenshot saved" in message, message
 
 

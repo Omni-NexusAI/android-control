@@ -1,24 +1,15 @@
 """Android Control Run Tool - Autonomous Android control via Python-native execution loop.
 
-Tier 1 (Local Model): Python execution loop that dumps phone UI, sends elements
-to an LLM, parses the action response, executes via ADB, and repeats.
+Tier 1 (Local Model): Python execution loop that dumps phone UI, sends the
+numbered element list (and, when useful, an annotated screenshot) to an LLM,
+executes the chosen action via ADB, and repeats.
 
 No external TypeScript/bun dependency required.
-
-Uses importlib to load plugin-internal helpers (ui_parser, action_validator,
-screen_comparator, llm_client, execution_loop) to avoid namespace collision
-with A0's own helpers package. ADB functions are inlined here to bypass
-the adb_client.py module which has conflicting imports.
 """
 
 import asyncio
-import importlib.util
 import logging
-import os
-import subprocess
-import sys
 import time
-import types
 
 from helpers.tool import Tool, Response
 from helpers import plugins
@@ -29,57 +20,66 @@ from usr.plugins.droidclaw.helpers.device_context import (
     acquire_device,
     claim,
     release_device,
-    screenshot_path,
 )
 
 logger = logging.getLogger("droidclaw")
 
 PLUGIN_NAME = "droidclaw"
-_PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_PLUGIN_HELPERS_DIR = os.path.join(_PLUGIN_DIR, "helpers")
 
 
 # ---------------------------------------------------------------------------
-# Inline ADB functions (avoids loading adb_client.py which conflicts)
+# Device I/O injected into the execution loop (run in worker threads)
 # ---------------------------------------------------------------------------
 
 def _run_adb(args: list, device: str = None, timeout: int = 10) -> str:
     """Execute an adb command and return stdout."""
-    try:
-        result = run_adb_result(args, device=device if device is not None else "", timeout=timeout)
-        if result["returncode"] != 0:
-            raise RuntimeError(f"adb failed: {result['stderr'] or result['stdout'] or result['output']}")
-        return result["stdout"].strip()
-    except FileNotFoundError:
-        raise RuntimeError("ADB client is unavailable. Android Control should install plugin-owned platform-tools; check Android Control dependency diagnostics.")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"adb command timed out after {timeout}s")
+    result = run_adb_result(args, device=device if device is not None else "", timeout=timeout)
+    if result["returncode"] != 0:
+        raise RuntimeError(f"adb failed: {result['stderr'] or result['stdout'] or result['output']}")
+    return result["stdout"].strip()
 
 
 def _wake_device(device: str = None) -> bool:
-    """Wake the phone screen if it is asleep."""
+    """Wake the screen; swipe the keyguard away only if the screen was off.
+
+    The old unconditional swipe scrolled lists / opened the app drawer on an
+    already-awake screen whenever a UI dump came back empty.
+    """
     try:
+        power = run_adb_result(["shell", "dumpsys", "power"], device=device or "", timeout=8)
+        asleep = "mWakefulness=Awake" not in (power.get("stdout") or "")
         _run_adb(["shell", "input", "keyevent", "KEYCODE_WAKEUP"], device=device, timeout=5)
-        time.sleep(0.3)
-        _run_adb(
-            ["shell", "input", "swipe", "540", "1800", "540", "800", "300"],
-            device=device, timeout=5,
-        )
+        if asleep:
+            time.sleep(0.4)
+            size = _screen_size(device)
+            x, y1, y2 = size[0] // 2, int(size[1] * 0.85), int(size[1] * 0.35)
+            _run_adb(["shell", "input", "swipe", str(x), str(y1), str(x), str(y2), "300"], device=device, timeout=5)
         return True
     except RuntimeError:
         return False
 
 
-def _capture_screenshot(device: str = None, local_path: str = None) -> str:
-    """Capture a screenshot from the device and save it locally."""
-    if local_path is None:
-        local_path = screenshot_path(device or "auto", prefix="run")
+def _screen_size(device: str = None) -> tuple:
+    try:
+        output = _run_adb(["shell", "wm", "size"], device=device, timeout=5)
+    except RuntimeError:
+        return (1080, 2400)
+    sizes = [line.split(":")[-1].strip() for line in output.splitlines() if "size" in line]
+    for value in reversed(sizes):  # "Override size" wins over "Physical size"
+        try:
+            w, h = value.lower().split("x")
+            return (int(w), int(h))
+        except ValueError:
+            continue
+    return (1080, 2400)
+
+
+def _screenshot_png(device: str = None) -> bytes:
+    """Capture a PNG screenshot straight from the device."""
     result = run_adb_result(["exec-out", "screencap", "-p"], device=device or "", timeout=15, binary=True)
     if result["returncode"] != 0 or not result["stdout"]:
         raise RuntimeError(f"screenshot failed: {result['stderr'] or result['output']}")
-    with open(local_path, "wb") as f:
-        f.write(result["stdout"])
-    return local_path
+    return result["stdout"]
 
 
 def _get_connected_devices() -> list:
@@ -88,39 +88,6 @@ def _get_connected_devices() -> list:
         return [device.to_dict() for device in canonical_devices()]
     except Exception:
         return []
-
-
-# ---------------------------------------------------------------------------
-# Plugin module loader (importlib-based)
-# ---------------------------------------------------------------------------
-
-_loaded_modules = {}
-
-
-def _load_plugin_module(module_name: str):
-    """Load a module from the plugin's helpers/ directory via importlib."""
-    prefixed_name = f"droidclaw_helpers.{module_name}"
-    if prefixed_name in _loaded_modules:
-        return _loaded_modules[prefixed_name]
-
-    if "droidclaw_helpers" not in sys.modules:
-        pkg = types.ModuleType("droidclaw_helpers")
-        pkg.__path__ = [_PLUGIN_HELPERS_DIR]
-        pkg.__package__ = "droidclaw_helpers"
-        sys.modules["droidclaw_helpers"] = pkg
-
-    file_path = os.path.join(_PLUGIN_HELPERS_DIR, f"{module_name}.py")
-    if not os.path.isfile(file_path):
-        raise ImportError(f"Plugin helper not found: {file_path}")
-
-    spec = importlib.util.spec_from_file_location(prefixed_name, file_path)
-    module = importlib.util.module_from_spec(spec)
-    module.__package__ = "droidclaw_helpers"
-    sys.modules[prefixed_name] = module
-    spec.loader.exec_module(module)
-
-    _loaded_modules[prefixed_name] = module
-    return module
 
 
 # ---------------------------------------------------------------------------
@@ -134,21 +101,47 @@ def _load_plugin_config(agent=None) -> dict:
         return plugins.get_plugin_config(PLUGIN_NAME) or {}
 
 
+_DEFAULTS = {
+    "provider": "ollama",
+    "vision_mode": "fallback",
+    "model_supports_vision": True,
+    "max_steps": 30,
+    "stuck_threshold": 3,
+    "step_delay": 2,
+    "max_elements": 40,
+    "auto_intervene": True,
+    "vision_image_max_edge": 1280,
+}
+
+_KEYS = [
+    "provider", "default_model", "vision_mode", "max_steps",
+    "device", "tier", "stuck_threshold", "step_delay",
+    "max_elements", "auto_intervene", "api_base", "api_key",
+    "model_supports_vision", "vision_image_max_edge",
+]
+
+
+def _bool(value, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _merge_config(cfg: dict, kwargs: dict) -> dict:
-    keys = [
-        "provider", "default_model", "vision_mode", "max_steps",
-        "device", "tier", "stuck_threshold", "step_delay",
-        "max_elements", "auto_intervene", "api_base", "api_key",
-        "model_supports_vision",
-    ]
+    """Tool args > plugin config > defaults (missing keys keep their default)."""
     merged = {}
-    for k in keys:
+    for k in _KEYS:
         if k in kwargs and kwargs[k] not in (None, ""):
             merged[k] = kwargs[k]
-        elif k in cfg:
+        elif cfg.get(k) not in (None, ""):
             merged[k] = cfg[k]
         else:
-            merged[k] = None
+            merged[k] = _DEFAULTS.get(k)
+    # Legacy arg name from the tool prompt.
+    if "intervene" in kwargs and kwargs["intervene"] not in (None, ""):
+        merged["auto_intervene"] = kwargs["intervene"]
     return merged
 
 
@@ -208,47 +201,39 @@ class DroidClawRun(Tool):
                 break_loop=False,
             )
 
-        # Load plugin helper modules (only the ones without import conflicts)
-        try:
-            ui_parser = _load_plugin_module("ui_parser")
-            action_validator = _load_plugin_module("action_validator")
-            screen_comparator = _load_plugin_module("screen_comparator")
-            llm_client_mod = _load_plugin_module("llm_client")
-            execution_loop_mod = _load_plugin_module("execution_loop")
-        except ImportError as exc:
-            return Response(
-                message=f"Error: Failed to load plugin modules: {exc}",
-                break_loop=False,
-            )
+        from usr.plugins.droidclaw.helpers import action_validator, execution_loop, ui_parser
+        from usr.plugins.droidclaw.helpers.llm_client import LLMClient
 
-        # Create LLM client
-        llm_client = llm_client_mod.LLMClient(
+        llm_client = LLMClient(
             provider=provider,
             model=model,
             api_base=api_base,
             api_key=api_key,
         )
 
-        # Create execution loop with injected functions
-        loop = execution_loop_mod.ExecutionLoop(
+        supports_vision = _bool(m.get("model_supports_vision"), True)
+        vision_mode = str(m.get("vision_mode") or "fallback").lower() if supports_vision else "off"
+
+        loop = execution_loop.ExecutionLoop(
             device=device,
             llm_client=llm_client,
             max_steps=int(m.get("max_steps") or 30),
             step_delay=float(m.get("step_delay") or 2),
-            vision_mode=(m.get("vision_mode") or "off") if bool(m.get("model_supports_vision", True)) else "off",
+            vision_mode=vision_mode,
             max_elements=int(m.get("max_elements") or 40),
             stuck_threshold=int(m.get("stuck_threshold") or 3),
+            auto_intervene=_bool(m.get("auto_intervene"), True),
+            image_max_edge=int(m.get("vision_image_max_edge") or 1280),
             fn_run_adb=_run_adb,
             fn_dump_ui=ui_parser.dump_ui,
             fn_wake_device=_wake_device,
-            fn_capture_screenshot=_capture_screenshot,
+            fn_screenshot=_screenshot_png,
             fn_validate_action=action_validator.validate_action,
-            fn_compare_dumps=screen_comparator.compare_dumps,
         )
 
         logger.info(
-            "Starting Android Control Python loop: device=%s, provider=%s, model=%s, goal=%s",
-            device, provider, model, goal[:100],
+            "Starting Android Control loop: device=%s, provider=%s, model=%s, vision=%s, goal=%s",
+            device, provider, model, vision_mode, goal[:100],
         )
 
         renew = asyncio.create_task(self._hold_device(device))
@@ -263,7 +248,7 @@ class DroidClawRun(Tool):
         finally:
             renew.cancel()
 
-        summary = execution_loop_mod.format_result_summary(result, goal)
+        summary = execution_loop.format_result_summary(result, goal)
         return Response(message=f"Device: {device}\n{summary}", break_loop=False)
 
     async def _hold_device(self, device: str) -> None:
