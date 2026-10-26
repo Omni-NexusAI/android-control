@@ -58,7 +58,7 @@ Important settings:
 - `adb_keepalive` / `adb_keepalive_interval`: keep in-use wireless ADB transports alive with a light ping (default on, every 20 seconds).
 - `device`: optional preferred Android device id.
 - `provider`, `default_model`, `api_base`: plugin-local model provider, model name, and API endpoint for Android Control task execution.
-- `model_supports_vision` / `vision_mode`: controls whether screenshots can be used by the task loop and how vision should be handled.
+- `model_supports_vision` / `vision_mode` / `vision_image_max_edge`: whether the task loop may attach screenshots, when (`off`, `fallback`, `always`), and how large they are (default 1280 px long edge, JPEG).
 - `max_steps`, `step_delay`, `stuck_threshold`, `max_elements`, `auto_intervene`: task loop limits and safety controls.
 
 ## Connection Reliability
@@ -69,6 +69,18 @@ Android Control keeps the ADB connection fast and self-healing:
 - Device lists are cached for a couple of seconds and Tailscale discovery refreshes in the background, so each tap or swipe runs one ADB command instead of five or six.
 - When a command fails because the transport dropped (wireless debugging went idle, the phone changed its Wireless debugging port, or the transport went `offline`), Android Control reconnects using the live mDNS port or the last known endpoint and retries the command once. The agent sees the successful result instead of spending tool calls reconnecting.
 - Known wireless endpoints are remembered in `data/known_devices.json`.
+
+## Vision
+
+Android Control uses a "set-of-marks" approach so screenshots add information instead of confusing the model:
+
+- Every step lists the meaningful on-screen elements in reading order, numbered `[1]..[N]`, with kind, label, state and center.
+- When a screenshot is attached, each listed element is boxed on it and labelled with the same number. The model answers `{"action": "tap", "element": 7}` and Android Control taps that element's real center, so image downscaling can never cause a wrong tap.
+- In `fallback` mode the screenshot is attached only when it helps: no or very few labelled elements, many unlabelled icons, web/canvas content, the last action changed nothing, or the model asks with `{"action": "look"}`. `always` attaches it every step.
+- Screenshots are downscaled JPEGs, not full-resolution PNGs, and only the current one is sent.
+- The model sees its recent actions and whether each one changed the screen; when stuck, recovery escalates (back, then scroll, then home) and the model is told what happened.
+- If the model or endpoint rejects images, the run continues text-only and the summary says so.
+- The main Agent Zero agent can use `adb_screen` mode `annotated` to get the numbered list plus the marked screenshot (to open with `vision_load`) and then `adb_tools` `tap` with `"element": N`.
 
 ## Multiple Phones
 

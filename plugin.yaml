@@ -46,7 +46,10 @@ config_schema:
         description: Custom API base URL (empty = provider default)
       vision_mode:
         type: string
-        description: "off, fallback, or always"
+        description: "off, fallback (attach an annotated screenshot only when the element list is not enough), or always"
+      vision_image_max_edge:
+        type: integer
+        description: Longest edge in pixels of screenshots sent to the model (smaller = fewer tokens)
       tier:
         type: string
         description: "auto, tier1, tier2, tier3"

@@ -9,6 +9,7 @@ provider: "ollama"
 default_model: "qwen3.5-35b-a3b"
 model_supports_vision: true
 vision_mode: "fallback"
+vision_image_max_edge: 1280
 tier: "auto"
 max_steps: 30
 stuck_threshold: 3

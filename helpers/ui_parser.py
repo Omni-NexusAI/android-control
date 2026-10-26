@@ -29,7 +29,7 @@ def parse_ui_xml(xml_string: str) -> list[dict]:
         logger.error("Failed to parse UI XML: %s", e)
         return elements
 
-    for node in root.iter():
+    for node in root.iter('node'):
         bounds_str = node.get('bounds', '')
         center = _parse_bounds(bounds_str)
 
@@ -37,15 +37,38 @@ def parse_ui_xml(xml_string: str) -> list[dict]:
             'text': node.get('text', ''),
             'content_desc': node.get('content-desc', ''),
             'bounds': bounds_str,
-            'clickable': node.get('clickable', 'false').lower() == 'true',
+            'rect': parse_rect(bounds_str),
+            'clickable': _flag(node, 'clickable'),
+            'long_clickable': _flag(node, 'long-clickable'),
+            'scrollable': _flag(node, 'scrollable'),
+            'checkable': _flag(node, 'checkable'),
+            'checked': _flag(node, 'checked'),
+            'focusable': _flag(node, 'focusable'),
+            'focused': _flag(node, 'focused'),
+            'selected': _flag(node, 'selected'),
+            'password': _flag(node, 'password'),
             'enabled': node.get('enabled', 'true').lower() == 'true',
             'class': node.get('class', ''),
+            'package': node.get('package', ''),
             'resource_id': node.get('resource-id', ''),
+            'hint': node.get('hint', ''),
             'center': center,
         }
         elements.append(element)
 
     return elements
+
+
+def _flag(node, name: str) -> bool:
+    return (node.get(name, 'false') or 'false').lower() == 'true'
+
+
+def parse_rect(bounds_str: str) -> list[int]:
+    """Parse ``[x1,y1][x2,y2]`` to ``[x1, y1, x2, y2]`` ([0,0,0,0] on failure)."""
+    match = re.match(r'\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]', bounds_str or '')
+    if not match:
+        return [0, 0, 0, 0]
+    return [int(v) for v in match.groups()]
 
 
 def _parse_bounds(bounds_str: str) -> list[int]:
