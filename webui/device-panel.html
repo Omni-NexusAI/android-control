@@ -1,3 +1,4 @@
+<html class="droidclaw-panel">
 <title>Android Control Panel</title>
 <!-- Android Control Panel (A0 Modal) -->
 <div class="dc-panel-container">
@@ -44,6 +45,8 @@
       <button class="dc-btn dc-btn-action" onclick="dcScreenshot()">&#x1F4F7; Screenshot</button>
       <button class="dc-btn dc-btn-action" onclick="dcScreenDump()">&#x1F4CB; Dump</button>
     </div>
+    <div id="dc-quick-status" class="dc-quick-status" aria-live="polite"></div>
+    <pre id="dc-dump-output" class="dc-dump-output" style="display:none"></pre>
    </div>
   </div>
 
@@ -65,6 +68,7 @@
         <button class="dc-btn dc-btn-small" onclick="dcPreviewKey('back')" title="Back">&#x25C0;</button>
         <button class="dc-btn dc-btn-small" onclick="dcPreviewKey('home')" title="Home">&#x25CF;</button>
         <button class="dc-btn dc-btn-small" onclick="dcPreviewKey('recents')" title="Recent apps">&#x25A0;</button>
+        <button class="dc-btn dc-btn-small dc-btn-primary" onclick="dcPopOut()" title="Float the screen over Agent Zero while you watch the chat">&#x29C9; Pop out</button>
       </div>
     </div>
     <div class="dc-preview-container" id="dc-viewer">
@@ -190,6 +194,10 @@
 .dc-fps-label select { background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 6px; color: #e0e0e0; padding: 3px 6px; font-size: 12px; }
 .dc-nav-keys { display: flex; gap: 4px; }
 .dc-viewer-status { font-size: 10px; color: #777; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 8px; }
+.dc-quick-status { font-size: 11px; color: #888; min-height: 14px; margin-top: 6px; }
+.dc-quick-status.ok { color: #4caf50; }
+.dc-quick-status.fail { color: #ff6b6b; }
+.dc-dump-output { font-size: 11px; color: #ccc; background: #0a0a1a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 6px 0 0; }
 .dc-preview-hint { font-size: 10px; color: #666; margin-top: 6px; text-align: center; }
 .dc-form { display: flex; flex-direction: column; gap: 10px; }
 .dc-form-group { display: flex; flex-direction: column; gap: 4px; }
@@ -294,6 +302,7 @@
   var dcInitialized = false;
   var dcVisibilityHandler = null;
   var dcFocusHandler = null;
+  var dcRootObserver = null;
 
   if (typeof window.__dcPanelCleanup === 'function') {
     try { window.__dcPanelCleanup(); } catch(e) {}
@@ -418,20 +427,6 @@
     }).then(function(r) { return r.json(); });
   }
 
-  function fetchPluginConfig() {
-    return getCsrfToken().then(function(token) {
-      return fetch('/api/plugins', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token},
-        body: JSON.stringify({action: 'get_config', plugin_name: 'droidclaw'})
-      });
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) { return data.data || {}; })
-    .catch(function() { return {}; });
-  }
-
   function setConnected(deviceId, model) {
     var focus = getFocusState();
     if (focus.mode === 'pinned' && deviceId) setStoredDevice(deviceId);
@@ -551,10 +546,14 @@
     return state;
   }
 
+  var ACTIVE_TASK_STATES = {preparing: 1, sent: 1, queued: 1, agent_running: 1};
+
   function renderTaskState(state) {
     var el = getEl('dc-task-status');
     if (!el) return;
     state = state || loadJson(TASK_STATE_KEY, {});
+    var stopBtn = getEl('dc-stop-btn');
+    if (stopBtn) stopBtn.disabled = !ACTIVE_TASK_STATES[state.status];
     if (!state.status && !state.headline) {
       el.textContent = '';
       return;
@@ -593,47 +592,6 @@
     }
   }
 
-  window.dcRefreshStatus = function() {
-    var focus = getFocusState();
-    apiCall('device_status', {device: getActionDevice()}).then(function(data) {
-      var active = data.active_device;
-      if (active) {
-        setConnected(active.serial, active.model || '');
-      } else if (focus.mode === 'pinned') {
-        getEl('dc-device-id').textContent = focus.serial;
-        getEl('dc-device-model').textContent = '--';
-        getEl('dc-connection-status').textContent = 'Unavailable';
-        getEl('dc-connection-status').className = 'dc-status-badge dc-status-disconnected';
-      } else {
-        setDisconnected();
-      }
-    }).catch(function() {
-      setDisconnected();
-    });
-  };
-
-  window.dcConnect = function() {
-    document.getElementById('dc-connection-status').textContent = 'Connecting...';
-    document.getElementById('dc-connection-status').className = 'dc-status-badge dc-status-disconnected';
-    fetchPluginConfig().then(function(cfg) {
-      var addr = cfg.device || '';
-      if (!addr) {
-        dcRefreshStatus();
-        return;
-      }
-      apiCall('connect', {ip_port: addr}).then(function(data) {
-        if (data.success) {
-          setConnected(data.serial || addr, '');
-          dcLoadDevices();
-        } else {
-          document.getElementById('dc-connection-status').textContent = 'Failed';
-        }
-      }).catch(function() {
-        document.getElementById('dc-connection-status').textContent = 'Failed';
-      });
-    });
-  };
-
   window.dcDisconnect = function() {
     var dev = getActionDevice();
     apiCall('disconnect', {ip_port: dev || ''}).then(function() {
@@ -647,68 +605,69 @@
     });
   };
 
+  // Auto mode sends an empty device and lets the server resolve it, so a
+  // quick action is one request instead of three.
   function withDevice(fn) {
-    var dev = getActionDevice();
-    if (dev) { fn(dev); return; }
-    fetchPluginConfig().then(function(cfg) {
-      var d = cfg.device || '';
-      if (d) { fn(d); }
-      else {
-        apiCall('device_status', {}).then(function(data) {
-          if (data.active_device) {
-            var serial = data.active_device.serial;
-            setConnected(serial, data.active_device.model || '');
-            fn(serial);
-          } else {
-            alert('No device connected. Configure device in plugin settings.');
-          }
-        });
-      }
-    });
+    fn(getActionDevice());
+  }
+
+  var dcQuickTimer = null;
+  function setQuickStatus(text, kind) {
+    var el = getEl('dc-quick-status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'dc-quick-status' + (kind ? ' ' + kind : '');
+    if (dcQuickTimer) clearTimeout(dcQuickTimer);
+    if (kind) dcQuickTimer = setTimeout(function() { if (getEl('dc-quick-status')) setQuickStatus(''); }, 4000);
+  }
+
+  function quickKey(label, keycode) {
+    setQuickStatus(label + '…');
+    runAdb(getActionDevice(), 'shell input keyevent ' + keycode).then(function(data) {
+      if (data.success) setQuickStatus('✓ ' + label, 'ok');
+      else setQuickStatus('✗ ' + label + ': ' + (data.stderr || data.message || 'failed'), 'fail');
+    }).catch(function(e) { setQuickStatus('✗ ' + label + ': ' + e.message, 'fail'); });
   }
 
   function runAdb(device, command) {
     return apiCall('adb_command', {device: device, command: command});
   }
 
-  window.dcWake = function() { withDevice(function(d) { runAdb(d, 'shell input keyevent KEYCODE_WAKEUP'); }); };
-  window.dcHome = function() { withDevice(function(d) { runAdb(d, 'shell input keyevent KEYCODE_HOME'); }); };
-  window.dcBack = function() { withDevice(function(d) { runAdb(d, 'shell input keyevent KEYCODE_BACK'); }); };
-  window.dcRecents = function() { withDevice(function(d) { runAdb(d, 'shell input keyevent KEYCODE_APP_SWITCH'); }); };
+  window.dcWake = function() { quickKey('Wake', 'KEYCODE_WAKEUP'); };
+  window.dcHome = function() { quickKey('Home', 'KEYCODE_HOME'); };
+  window.dcBack = function() { quickKey('Back', 'KEYCODE_BACK'); };
+  window.dcRecents = function() { quickKey('Recents', 'KEYCODE_APP_SWITCH'); };
 
   window.dcScreenshot = function() {
-    withDevice(function(d) {
-      var status = document.getElementById('dc-task-status');
-      status.textContent = 'Taking screenshot...';
-      apiCall('screenshot', {device: d}).then(function(data) {
-        if (data.success) {
-          status.innerHTML = 'Screenshot saved (' + data.size_kb + ' KB): <a href="' + escHtml(data.url) +
-            '" target="_blank" rel="noopener">open</a>';
-        } else {
-          status.textContent = 'Screenshot failed: ' + (data.message || 'unknown');
-        }
-      }).catch(function(e) {
-        status.textContent = 'Screenshot failed: ' + e.message;
-      });
-    });
+    setQuickStatus('Taking screenshot…');
+    apiCall('screenshot', {device: getActionDevice()}).then(function(data) {
+      var el = getEl('dc-quick-status');
+      if (!el) return;
+      if (data.success) {
+        el.className = 'dc-quick-status ok';
+        el.innerHTML = '✓ Screenshot saved (' + data.size_kb + ' KB): <a href="' + escHtml(data.url) +
+          '" target="_blank" rel="noopener">open</a>';
+      } else {
+        setQuickStatus('✗ Screenshot failed: ' + (data.message || 'unknown'), 'fail');
+      }
+    }).catch(function(e) { setQuickStatus('✗ Screenshot failed: ' + e.message, 'fail'); });
   };
 
   window.dcScreenDump = function() {
-    withDevice(function(d) {
-      document.getElementById('dc-task-status').textContent = 'Dumping UI...';
-      runAdb(d, 'shell uiautomator dump /sdcard/dc_dump.xml').then(function() {
-        return runAdb(d, 'shell cat /sdcard/dc_dump.xml');
-      }).then(function(data) {
-        document.getElementById('dc-task-status').textContent = 'UI dump captured (see stdout)';
-      }).catch(function(e) {
-        document.getElementById('dc-task-status').textContent = 'Dump failed: ' + e.message;
-      });
-    });
+    var out = getEl('dc-dump-output');
+    if (out.style.display !== 'none' && out.textContent) { out.style.display = 'none'; return; }
+    setQuickStatus('Reading screen elements…');
+    apiCall('screen_elements', {device: getActionDevice()}).then(function(data) {
+      if (!data.success) { setQuickStatus('✗ Dump failed: ' + (data.message || 'unknown'), 'fail'); return; }
+      out.textContent = 'Screen ' + data.width + 'x' + data.height + ' · ' + data.count + ' elements\n' + data.text;
+      out.style.display = '';
+      setQuickStatus('✓ ' + data.count + ' elements (click Dump again to hide)', 'ok');
+    }).catch(function(e) { setQuickStatus('✗ Dump failed: ' + e.message, 'fail'); });
   };
 
   window.dcStartTask = function() {
     var goal = getEl('dc-goal').value.trim();
-    if (!goal) { alert('Enter a goal'); return; }
+    if (!goal) { getEl('dc-goal').focus(); setQuickStatus('Enter a goal first', 'fail'); return; }
 
     var device = getActionDevice();
     var deviceLabel = getDeviceLabel(device);
@@ -763,15 +722,23 @@
       saveTaskState({status: 'failed', headline: 'Task dispatch failed', message: e.message, device_label: deviceLabel, context: context});
     })
     .finally(function() {
-      getEl('dc-start-btn').disabled = false;
-      getEl('dc-stop-btn').disabled = true;
+      if (getEl('dc-start-btn')) getEl('dc-start-btn').disabled = false;
     });
   };
 
   window.dcStopTask = function() {
-    saveTaskState({status: 'stopped', headline: 'Panel tracking stopped', message: 'The chat task may still be running in A0.'});
-    getEl('dc-start-btn').disabled = false;
-    getEl('dc-stop-btn').disabled = true;
+    var state = loadJson(TASK_STATE_KEY, {});
+    var stopBtn = getEl('dc-stop-btn');
+    if (stopBtn) stopBtn.disabled = true;
+    if (!state.context) {
+      saveTaskState({status: 'stopped', headline: 'Stopped', message: 'No running chat to stop.'});
+      return;
+    }
+    rootApiCall('stop', {context: state.context}).then(function() {
+      saveTaskState({status: 'stopped', headline: 'Stopped', message: 'The agent was asked to stop.'});
+    }).catch(function(e) {
+      saveTaskState({status: 'failed', headline: 'Stop failed', message: e.message});
+    });
   };
 
   // ---- Saved prompts (goal text only; previously labelled "workflows") ----
@@ -934,8 +901,14 @@
     });
   };
 
-  window.dcLoadDevices = function() {
-    return apiCall('device_status', {}).then(function(data) {
+  var dcLoadInFlight = null;
+  var dcLastLoad = 0;
+
+  // light=true skips diagnostics (used for periodic polling).
+  window.dcLoadDevices = function(opts) {
+    if (dcLoadInFlight) return dcLoadInFlight;
+    dcLastLoad = Date.now();
+    dcLoadInFlight = apiCall('device_status', {light: !!(opts && opts.light)}).then(function(data) {
       var select = document.getElementById('dc-device-select');
       if (!select) return;
       var devices = data.devices || [];
@@ -1009,7 +982,8 @@
       }
       setDisconnected();
       getEl('dc-connection-status').textContent = 'Error';
-    });
+    }).finally(function() { dcLoadInFlight = null; });
+    return dcLoadInFlight;
   };
 
   window.dcSelectDevice = function(serial) {
@@ -1046,16 +1020,21 @@
     dcRenderSavedPrompts();
     dcLoadWorkflows();
     dcLoadDevices();
-    dcDeviceRefreshTimer = setInterval(function() { dcLoadDevices(); }, 10000);
+    dcDeviceRefreshTimer = setInterval(function() { dcLoadDevices({light: true}); }, 15000);
     dcTaskWatchTimer = setInterval(watchTaskState, 1500);
+    // focus + visibilitychange usually fire together: refresh at most every 5s.
     dcVisibilityHandler = function() {
-      if (!document.hidden && panelReady()) dcLoadDevices();
+      if (!document.hidden && panelReady() && Date.now() - dcLastLoad > 5000) dcLoadDevices({light: true});
     };
-    dcFocusHandler = function() {
-      if (panelReady()) dcLoadDevices();
-    };
+    dcFocusHandler = dcVisibilityHandler;
     document.addEventListener('visibilitychange', dcVisibilityHandler);
     window.addEventListener('focus', dcFocusHandler);
+    // Clean up when the modal's DOM goes away, however it was closed.
+    var root = document.querySelector('.dc-panel-container');
+    dcRootObserver = new MutationObserver(function() {
+      if (root && !document.contains(root)) window.__dcPanelCleanup();
+    });
+    dcRootObserver.observe(document.body, {childList: true, subtree: true});
   }
 
   whenPanelReady(dcInitializePanel);
@@ -1129,13 +1108,16 @@
     if (dcWfRunTimer) { clearInterval(dcWfRunTimer); dcWfRunTimer = null; }
     if (dcVisibilityHandler) { document.removeEventListener('visibilitychange', dcVisibilityHandler); dcVisibilityHandler = null; }
     if (dcFocusHandler) { window.removeEventListener('focus', dcFocusHandler); dcFocusHandler = null; }
+    if (dcRootObserver) { dcRootObserver.disconnect(); dcRootObserver = null; }
+    if (dcQuickTimer) { clearTimeout(dcQuickTimer); dcQuickTimer = null; }
     dcInitialized = false;
   };
 
-  var dcOrigCloseModal = window.closeModal;
-  window.closeModal = function() {
-    if (typeof window.__dcPanelCleanup === 'function') window.__dcPanelCleanup();
-    if (dcOrigCloseModal) dcOrigCloseModal.apply(this, arguments);
+  window.dcPopOut = function() {
+    if (!window.DroidclawPopout) { setQuickStatus('Pop-out is still loading, try again', 'fail'); return; }
+    var device = getActionDevice();
+    window.DroidclawPopout.open({device: device, label: device ? getDeviceLabel(device) : 'Auto', fps: previewFps()});
+    if (typeof window.closeModal === 'function') window.closeModal();
   };
 
  })();
