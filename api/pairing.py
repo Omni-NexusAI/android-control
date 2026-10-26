@@ -35,7 +35,7 @@ def _find_connect_service(ip: str, backend=None) -> dict:
     ip = str(ip or "").strip()
     if not ip:
         return {}
-    for service in list_mdns_services(backend):
+    for service in list_mdns_services(backend, max_age=0):
         if service.service_type == CONNECT_SERVICE_TYPE and service.host == ip:
             return {
                 "connect_ip": service.host,

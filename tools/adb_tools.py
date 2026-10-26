@@ -1,4 +1,3 @@
-import subprocess
 import asyncio
 import os
 import time
@@ -6,7 +5,7 @@ import xml.etree.ElementTree as ET
 from typing import Optional
 
 from helpers.tool import Tool, Response
-from usr.plugins.droidclaw.helpers.adb_backend import adb_cmd, parse_adb_command, resolve_device, run_adb_async, select_backend
+from usr.plugins.droidclaw.helpers.adb_backend import parse_adb_command, resolve_device, run_adb_async
 
 
 async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -> str:
@@ -21,7 +20,7 @@ async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -
 
 
 async def _get_device(device: Optional[str] = None) -> Optional[str]:
-    resolution = resolve_device(device if device is not None else "")
+    resolution = await asyncio.to_thread(resolve_device, device if device is not None else "")
     if resolution.get("resolved_device"):
         return resolution["resolved_device"]
     if device:
@@ -159,19 +158,10 @@ async def _handle_screenshot(device: Optional[str]) -> str:
     os.makedirs(screenshot_dir, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(screenshot_dir, f"screen_{ts}.png")
-    backend = select_backend()
-    resolution = resolve_device(device if device is not None else "", backend)
-    if not resolution.get("resolved_device"):
-        return f"Error: ADB device is not connected: {device or 'auto'}"
-    proc = await asyncio.create_subprocess_exec(
-        *adb_cmd(["exec-out", "screencap", "-p"], device=resolution["resolved_device"], backend=backend),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-    if proc.returncode != 0:
-        err = stderr.decode("utf-8", errors="replace").strip()
-        return f"Error: screenshot failed - {err}"
+    result = await run_adb_async(["exec-out", "screencap", "-p"], device=device or "", timeout=15, binary=True)
+    if result["returncode"] != 0:
+        return f"Error: screenshot failed - {result['stderr'] or result['output']}"
+    stdout = result["stdout"]
     with open(filepath, "wb") as f:
         f.write(stdout)
     size_kb = len(stdout) / 1024

@@ -1,4 +1,3 @@
-import subprocess
 import asyncio
 from typing import Optional
 
@@ -17,7 +16,7 @@ async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 15) -
 
 
 async def _auto_detect_device() -> Optional[str]:
-    resolution = resolve_device("")
+    resolution = await asyncio.to_thread(resolve_device, "")
     if resolution.get("resolved_device"):
         return resolution["resolved_device"]
     raise RuntimeError("No ADB device connected. Run 'adb devices' to check.")
@@ -58,7 +57,7 @@ class AdbDevice(Tool):
 
     async def _device_status(self) -> str:
         devices = []
-        for dev in canonical_devices():
+        for dev in await asyncio.to_thread(canonical_devices):
             details = f"model:{dev.model}" if dev.model else ""
             devices.append(f"  - {dev.serial} [connected] {details}")
         if not devices:
@@ -105,7 +104,7 @@ class AdbDevice(Tool):
 
     async def _foreground_app(self, device: Optional[str]) -> str:
         try:
-            device = await _auto_detect_device() if not device else resolve_device(device).get("resolved_device")
+            device = await _auto_detect_device() if not device else (await asyncio.to_thread(resolve_device, device)).get("resolved_device")
             if not device:
                 return "Error: ADB device is not connected"
         except RuntimeError as e:

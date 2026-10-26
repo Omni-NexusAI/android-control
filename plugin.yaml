@@ -26,6 +26,12 @@ config_schema:
       adb_port:
         type: integer
         description: Host ADB server port
+      adb_keepalive:
+        type: boolean
+        description: Ping wireless devices that are in use so their ADB transport does not idle out
+      adb_keepalive_interval:
+        type: integer
+        description: Seconds between keepalive pings for in-use wireless devices
       provider:
         type: string
         description: LLM provider (ollama, lm_studio, groq, openrouter, openai, anthropic)

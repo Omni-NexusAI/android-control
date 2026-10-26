@@ -4,7 +4,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from helpers.tool import Tool, Response
-from usr.plugins.droidclaw.helpers.adb_backend import adb_cmd, resolve_device, run_adb_async, select_backend
+from usr.plugins.droidclaw.helpers.adb_backend import resolve_device, run_adb_async
 
 
 async def _run_adb(cmd: list, device: str, timeout: int = 30) -> tuple:
@@ -24,7 +24,7 @@ async def _run_adb(cmd: list, device: str, timeout: int = 30) -> tuple:
 
 
 async def _get_device(device: str) -> str:
-    resolution = resolve_device(device if device is not None else "")
+    resolution = await asyncio.to_thread(resolve_device, device if device is not None else "")
     return resolution.get("resolved_device") or ""
 
 
@@ -151,18 +151,10 @@ async def _take_screenshot(device: str) -> str:
     filename = f"screen_{timestamp}.png"
     filepath = os.path.join(screenshot_dir, filename)
     try:
-        backend = select_backend()
-        resolution = resolve_device(device, backend)
-        if not resolution.get("resolved_device"):
-            return "Error: No ADB device found. Connect a device first."
-        proc = await asyncio.create_subprocess_exec(
-            *adb_cmd(["exec-out", "screencap", "-p"], device=resolution["resolved_device"], backend=backend),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-        if proc.returncode != 0:
-            return f"Error capturing screenshot: {stderr.decode('utf-8', errors='replace')}"
+        result = await run_adb_async(["exec-out", "screencap", "-p"], device=device, timeout=15, binary=True)
+        if result["returncode"] != 0:
+            return f"Error capturing screenshot: {result['stderr'] or result['output']}"
+        stdout = result["stdout"]
         with open(filepath, "wb") as f:
             f.write(stdout)
         size_kb = os.path.getsize(filepath) / 1024
