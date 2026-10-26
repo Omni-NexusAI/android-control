@@ -1,64 +1,25 @@
 import asyncio
 import os
-import time
 import xml.etree.ElementTree as ET
 
 from helpers.tool import Tool, Response
-from usr.plugins.droidclaw.helpers.adb_backend import resolve_device, run_adb_async
-
-
-async def _run_adb(cmd: list, device: str, timeout: int = 30) -> tuple:
-    try:
-        result = await run_adb_async(cmd, device=device, timeout=timeout)
-        return (
-            result["returncode"],
-            result["stdout"],
-            result["stderr"],
-        )
-    except asyncio.TimeoutError:
-        return (-1, "", "ADB command timed out")
-    except FileNotFoundError:
-        return (-1, "", "ADB client is unavailable; check Android Control dependency diagnostics")
-    except Exception as e:
-        return (-1, "", str(e))
-
-
-async def _get_device(device: str) -> str:
-    resolution = await asyncio.to_thread(resolve_device, device if device is not None else "")
-    return resolution.get("resolved_device") or ""
+from usr.plugins.droidclaw.helpers.adb_backend import run_adb_async
+from usr.plugins.droidclaw.helpers.device_context import DeviceSelectionError, claim, screenshot_path
+from usr.plugins.droidclaw.helpers.ui_parser import dump_ui_xml
 
 
 async def _dump_ui(device: str, filter_text: str, max_elements: int) -> str:
-    rc, out, err = await _run_adb(
-        ["shell", "uiautomator", "dump", "/sdcard/ui.xml"], device, timeout=15
-    )
-    if rc != 0:
-        return f"Error dumping UI: {err}"
-    local_path = "/tmp/droidclaw_ui.xml"
-    rc, out, err = await _run_adb(
-        ["pull", "/sdcard/ui.xml", local_path], device, timeout=10
-    )
-    if rc != 0:
-        return f"Error pulling UI dump: {err}"
-    await _run_adb(["shell", "rm", "/sdcard/ui.xml"], device, timeout=5)
-    if not os.path.exists(local_path):
-        return "Error: UI dump file not found after pull"
-    result = _parse_ui_xml(local_path, filter_text, max_elements)
-    try:
-        os.remove(local_path)
-    except OSError:
-        pass
-    return result
+    xml_content = await asyncio.to_thread(dump_ui_xml, device)
+    if not xml_content:
+        return "Error dumping UI: uiautomator returned no hierarchy (screen may be animating or secure)"
+    return _parse_ui_xml(xml_content, filter_text, max_elements)
 
 
-def _parse_ui_xml(xml_path: str, filter_text: str, max_elements: int) -> str:
+def _parse_ui_xml(xml_content: str, filter_text: str, max_elements: int) -> str:
     try:
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
+        root = ET.fromstring(xml_content)
     except ET.ParseError as e:
         return f"Error parsing XML: {e}"
-    except Exception as e:
-        return f"Error reading XML file: {e}"
 
     elements = []
     filter_lower = filter_text.lower() if filter_text else ""
@@ -145,11 +106,7 @@ def _parse_ui_xml(xml_path: str, filter_text: str, max_elements: int) -> str:
 
 
 async def _take_screenshot(device: str) -> str:
-    screenshot_dir = "/a0/tmp/droidclaw_screenshots"
-    os.makedirs(screenshot_dir, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"screen_{timestamp}.png"
-    filepath = os.path.join(screenshot_dir, filename)
+    filepath = screenshot_path(device)
     try:
         result = await run_adb_async(["exec-out", "screencap", "-p"], device=device, timeout=15, binary=True)
         if result["returncode"] != 0:
@@ -172,12 +129,10 @@ class AdbScreen(Tool):
         filter_text = self.args.get("filter", "")
         max_elements = int(self.args.get("max_elements", 40))
 
-        device = await _get_device(device)
-        if not device:
-            return Response(
-                message="Error: No ADB device is visible inside the A0 container. Connect a device first; for wired USB, Docker must expose the device to the container.",
-                break_loop=False,
-            )
+        try:
+            device = await claim(self.agent, device)
+        except DeviceSelectionError as e:
+            return Response(message=f"Error: {e}", break_loop=False)
 
         results = []
         if mode in ("xml", "both"):

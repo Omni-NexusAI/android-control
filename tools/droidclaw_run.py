@@ -17,13 +17,20 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 import time
 import types
 
 from helpers.tool import Tool, Response
 from helpers import plugins
-from usr.plugins.droidclaw.helpers.adb_backend import canonical_devices, resolve_device, run_adb_result
+from usr.plugins.droidclaw.helpers.adb_backend import canonical_devices, run_adb_result
+from usr.plugins.droidclaw.helpers.device_context import (
+    LEASE_TTL,
+    DeviceSelectionError,
+    acquire_device,
+    claim,
+    release_device,
+    screenshot_path,
+)
 
 logger = logging.getLogger("droidclaw")
 
@@ -63,22 +70,15 @@ def _wake_device(device: str = None) -> bool:
         return False
 
 
-_SCREENSHOT_DIR = "/a0/tmp/droidclaw_screenshots"
-
-
 def _capture_screenshot(device: str = None, local_path: str = None) -> str:
     """Capture a screenshot from the device and save it locally."""
-    os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
     if local_path is None:
-        timestamp = int(time.time() * 1000)
-        local_path = os.path.join(_SCREENSHOT_DIR, f"screenshot_{timestamp}.png")
-    remote_path = "/sdcard/droidclaw_screenshot.png"
-    _run_adb(["shell", "screencap", "-p", remote_path], device=device, timeout=10)
-    _run_adb(["pull", remote_path, local_path], device=device, timeout=15)
-    try:
-        _run_adb(["shell", "rm", remote_path], device=device, timeout=5)
-    except RuntimeError:
-        pass
+        local_path = screenshot_path(device or "auto", prefix="run")
+    result = run_adb_result(["exec-out", "screencap", "-p"], device=device or "", timeout=15, binary=True)
+    if result["returncode"] != 0 or not result["stdout"]:
+        raise RuntimeError(f"screenshot failed: {result['stderr'] or result['output']}")
+    with open(local_path, "wb") as f:
+        f.write(result["stdout"])
     return local_path
 
 
@@ -127,8 +127,11 @@ def _load_plugin_module(module_name: str):
 # Config helpers
 # ---------------------------------------------------------------------------
 
-def _load_plugin_config() -> dict:
-    return plugins.get_plugin_config(PLUGIN_NAME) or {}
+def _load_plugin_config(agent=None) -> dict:
+    try:
+        return plugins.get_plugin_config(PLUGIN_NAME, agent=agent) or {}
+    except TypeError:
+        return plugins.get_plugin_config(PLUGIN_NAME) or {}
 
 
 def _merge_config(cfg: dict, kwargs: dict) -> dict:
@@ -161,21 +164,24 @@ class DroidClawRun(Tool):
         if not goal:
             return Response(message="Error: goal is required", break_loop=False)
 
-        cfg = _load_plugin_config()
+        cfg = _load_plugin_config(self.agent)
         tool_kwargs = dict(self.args)
         tool_kwargs.update(kwargs)
         m = _merge_config(cfg, tool_kwargs)
 
-        # Resolve device
-        requested_device = m.get("device") or ""
-        resolution = await asyncio.to_thread(resolve_device, requested_device)
-        device = resolution.get("resolved_device") or ""
-        if not device:
-            return Response(
-                message="Error: No ADB device is visible inside the A0 container. Connect a phone first; for wired USB, Docker must expose the device to the container.",
-                break_loop=False,
-            )
+        # Resolve device: explicit arg > agent binding > config > only device.
+        explicit = tool_kwargs.get("device") or ("" if self.agent is not None else m.get("device") or "")
+        try:
+            device = await claim(self.agent, explicit)
+        except DeviceSelectionError as exc:
+            return Response(message=f"Error: {exc}", break_loop=False)
 
+        try:
+            return await self._run_on_device(goal, device, m)
+        finally:
+            release_device(self.agent, device)
+
+    async def _run_on_device(self, goal: str, device: str, m: dict) -> Response:
         # Verify device is responsive
         try:
             output = await asyncio.to_thread(_run_adb, ["shell", "echo", "ok"], device, 5)
@@ -245,6 +251,7 @@ class DroidClawRun(Tool):
             device, provider, model, goal[:100],
         )
 
+        renew = asyncio.create_task(self._hold_device(device))
         try:
             result = await loop.run(goal)
         except Exception as exc:
@@ -253,6 +260,17 @@ class DroidClawRun(Tool):
                 message=f"Android Control execution failed: {exc}",
                 break_loop=False,
             )
+        finally:
+            renew.cancel()
 
         summary = execution_loop_mod.format_result_summary(result, goal)
-        return Response(message=summary, break_loop=False)
+        return Response(message=f"Device: {device}\n{summary}", break_loop=False)
+
+    async def _hold_device(self, device: str) -> None:
+        """Keep this agent's claim on the device alive for the whole run."""
+        while True:
+            await asyncio.sleep(LEASE_TTL / 3)
+            try:
+                await acquire_device(self.agent, device, wait=0)
+            except DeviceSelectionError:
+                return

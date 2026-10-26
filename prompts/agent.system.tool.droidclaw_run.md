@@ -1,5 +1,6 @@
 ### droidclaw_run
 
+"device": serial of the phone to act on; leave empty to use the phone selected with adb_device select (required when several phones are connected and none is selected)
 autonomous android device control agent that executes a goal using llm-guided navigation
 provide a natural language goal and it will tap swipe type and navigate the device to accomplish it
 uses adb for device interaction and an llm for decision making
@@ -24,3 +25,5 @@ usage:
     }
 }
 ~~~
+
+several phones at once: wrap one droidclaw_run per phone in the parallel tool, each with its own "device"; runs on different phones proceed concurrently and a phone already being driven by another agent is refused

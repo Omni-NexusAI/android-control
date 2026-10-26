@@ -1,11 +1,11 @@
 import asyncio
-import os
-import time
 import xml.etree.ElementTree as ET
 from typing import Optional
 
 from helpers.tool import Tool, Response
-from usr.plugins.droidclaw.helpers.adb_backend import parse_adb_command, resolve_device, run_adb_async
+from usr.plugins.droidclaw.helpers.adb_backend import parse_adb_command, run_adb_async
+from usr.plugins.droidclaw.helpers.device_context import DeviceSelectionError, claim, screenshot_path
+from usr.plugins.droidclaw.helpers.ui_parser import dump_ui_xml
 
 
 async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -> str:
@@ -17,15 +17,6 @@ async def _run_adb(cmd: list, device: Optional[str] = None, timeout: int = 30) -
         detail = result["stderr"] or result["stdout"] or result["output"] or "unknown error"
         return f"Error: {detail}"
     return result["stdout"] or result["stderr"] or "OK"
-
-
-async def _get_device(device: Optional[str] = None) -> Optional[str]:
-    resolution = await asyncio.to_thread(resolve_device, device if device is not None else "")
-    if resolution.get("resolved_device"):
-        return resolution["resolved_device"]
-    if device:
-        raise RuntimeError(f"ADB device is not connected: {device}")
-    raise RuntimeError("No ADB device connected. Run 'adb devices' to check.")
 
 
 def _escape_for_adb(text: str) -> str:
@@ -154,10 +145,7 @@ async def _handle_shell(command: str, device: Optional[str]) -> str:
 
 
 async def _handle_screenshot(device: Optional[str]) -> str:
-    screenshot_dir = "/a0/tmp/droidclaw_screenshots"
-    os.makedirs(screenshot_dir, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(screenshot_dir, f"screen_{ts}.png")
+    filepath = screenshot_path(device or "auto")
     result = await run_adb_async(["exec-out", "screencap", "-p"], device=device or "", timeout=15, binary=True)
     if result["returncode"] != 0:
         return f"Error: screenshot failed - {result['stderr'] or result['output']}"
@@ -169,18 +157,11 @@ async def _handle_screenshot(device: Optional[str]) -> str:
 
 
 async def _handle_screen_dump(device: Optional[str]) -> str:
-    dump_result = await _run_adb(
-        ["shell", "uiautomator", "dump", "/sdcard/ui.xml"], device, timeout=15
-    )
-    if "Error" in dump_result:
-        return f"Error dumping UI: {dump_result}"
-    tmp_path = "/tmp/droidclaw_ui.xml"
-    pull_result = await _run_adb(["pull", "/sdcard/ui.xml", tmp_path], device)
-    if "Error" in pull_result:
-        return f"Error pulling UI dump: {pull_result}"
+    xml_content = await asyncio.to_thread(dump_ui_xml, device)
+    if not xml_content:
+        return "Error dumping UI: uiautomator returned no hierarchy (screen may be animating or secure)"
     try:
-        tree = ET.parse(tmp_path)
-        root = tree.getroot()
+        root = ET.fromstring(xml_content)
     except ET.ParseError as e:
         return f"Error parsing UI XML: {e}"
     elements = []
@@ -234,8 +215,8 @@ class AdbTools(Tool):
         device = self.args.get("device", None)
 
         try:
-            dev = await _get_device(device)
-        except RuntimeError as e:
+            dev = await claim(self.agent, device)
+        except DeviceSelectionError as e:
             return Response(message=f"Error: {e}", break_loop=False)
 
         handlers = {

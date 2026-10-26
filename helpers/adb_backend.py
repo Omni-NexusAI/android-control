@@ -676,9 +676,21 @@ def tailscale_devices(config: dict | None = None, wait: bool = False) -> list[Ad
 def _device_key(device: AdbDevice) -> str:
     if device.ip:
         return f"ip:{device.ip}"
-    if device.product and device.model:
-        return f"product:{device.product}:{device.model}"
     return f"serial:{device.serial}"
+
+
+_MDNS_SERIAL = re.compile(r"^adb-(?P<hw>[A-Za-z0-9]+)-[A-Za-z0-9]+(?:\._adb|$)")
+
+
+def _hardware_serial(device: AdbDevice) -> str:
+    """Best-effort hardware serial: USB serial, or the one embedded in mDNS names."""
+    for name in [device.serial, *(device.aliases or [])]:
+        match = _MDNS_SERIAL.match(name or "")
+        if match:
+            return match.group("hw")
+    if not device.ip and "._adb" not in device.serial:
+        return device.serial
+    return ""
 
 
 def canonical_devices(backend: AdbBackend | None = None, wait_tailscale: bool = False) -> list[AdbDevice]:
@@ -691,6 +703,7 @@ def canonical_devices(backend: AdbBackend | None = None, wait_tailscale: bool = 
             mdns_by_ip.setdefault(service.host, []).append(service)
 
     grouped: dict[str, AdbDevice] = {}
+    hw_index: dict[str, str] = {}
     for device in devices:
         # mDNS auto-connected transports are named after the service
         # ("adb-<serial>-<id>._adb-tls-connect._tcp"); recover their IP so
@@ -714,11 +727,14 @@ def canonical_devices(backend: AdbBackend | None = None, wait_tailscale: bool = 
 
         device.aliases = sorted(aliases)
         key = _device_key(device)
-        if not device.ip and device.product and device.model:
-            for existing_key, existing_device in grouped.items():
-                if existing_device.product == device.product and existing_device.model == device.model:
-                    key = existing_key
-                    break
+        # The same phone can be attached twice (USB + wireless). Merge on the
+        # hardware serial, never on model/product: identical phones must stay
+        # separate devices.
+        hw = _hardware_serial(device)
+        if hw and hw in hw_index and hw_index[hw] in grouped:
+            key = hw_index[hw]
+        elif hw:
+            hw_index[hw] = key
         existing = grouped.get(key)
         if existing is None:
             grouped[key] = device

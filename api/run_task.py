@@ -94,7 +94,8 @@ class RunTask(ApiHandler):
 def _build_chat_prompt(goal: str, device_label: str, device: str = "") -> str:
     target_line = f"Target device: {device_label or 'Auto'}"
     device_instruction = (
-        f"When calling Android Control tools, pass device: {device}"
+        f"First bind this phone with adb_device action select and device {device} "
+        f"(or pass device: {device} on every Android Control call)."
         if device
         else "Target mode: Auto. Use Android Control's normal device auto-detection unless the user goal names a different target."
     )
