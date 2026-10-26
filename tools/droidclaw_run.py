@@ -168,7 +168,7 @@ class DroidClawRun(Tool):
 
         # Resolve device
         requested_device = m.get("device") or ""
-        resolution = resolve_device(requested_device)
+        resolution = await asyncio.to_thread(resolve_device, requested_device)
         device = resolution.get("resolved_device") or ""
         if not device:
             return Response(
@@ -178,7 +178,7 @@ class DroidClawRun(Tool):
 
         # Verify device is responsive
         try:
-            output = _run_adb(["shell", "echo", "ok"], device=device, timeout=5)
+            output = await asyncio.to_thread(_run_adb, ["shell", "echo", "ok"], device, 5)
             if "ok" not in output:
                 return Response(
                     message=f"Error: ADB device {device} is not responding.",

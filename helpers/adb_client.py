@@ -12,7 +12,7 @@ import subprocess
 import time
 
 from helpers import plugins
-from usr.plugins.droidclaw.helpers.adb_backend import adb_cmd, canonical_devices, run_adb_result
+from usr.plugins.droidclaw.helpers.adb_backend import canonical_devices, run_adb_result
 
 logger = logging.getLogger("droidclaw")
 
@@ -96,15 +96,10 @@ def connect_device(ip_port: str) -> bool:
     Returns:
         True if connection succeeded, False otherwise.
     """
-    try:
-        output = subprocess.run(
-            adb_cmd(["connect", ip_port]), capture_output=True, text=True, timeout=15
-        ).stdout.strip()
-        logger.info("adb connect %s: %s", ip_port, output)
-        return "connected" in output.lower()
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        logger.error("Failed to connect to %s: %s", ip_port, exc)
-        return False
+    result = run_adb_result(["connect", ip_port], timeout=15, resolve=False, recover=False)
+    output = result["output"]
+    logger.info("adb connect %s: %s", ip_port, output)
+    return result["returncode"] == 0 and "connected" in output.lower() and "cannot" not in output.lower()
 
 
 def pair_device(ip_port: str, code: str) -> bool:
@@ -118,19 +113,13 @@ def pair_device(ip_port: str, code: str) -> bool:
     Returns:
         True if pairing succeeded, False otherwise.
     """
-    try:
-        result = subprocess.run(
-            adb_cmd(["pair", ip_port, code]), capture_output=True, text=True, timeout=15
-        )
-        success = result.returncode == 0
-        if success:
-            logger.info("Successfully paired with %s", ip_port)
-        else:
-            logger.error("Pairing failed for %s: %s", ip_port, result.stderr.strip())
-        return success
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        logger.error("Failed to pair with %s: %s", ip_port, exc)
-        return False
+    result = run_adb_result(["pair", ip_port, code], timeout=15, resolve=False, recover=False)
+    success = result["returncode"] == 0
+    if success:
+        logger.info("Successfully paired with %s", ip_port)
+    else:
+        logger.error("Pairing failed for %s: %s", ip_port, result["output"])
+    return success
 
 
 def get_default_device() -> str:

@@ -55,10 +55,20 @@ Important settings:
 - `tailscale_probe_ports`: controls whether Android Control probes discovered Tailscale peers for reachable ADB ports before offering quick-connect guidance.
 - `tailscale_cache_ttl`: cache lifetime, in seconds, for discovered Tailscale peer state.
 - `tailscale_preferred_peers`: optional allowlist for narrowing the Tailscale peer list to specific devices or hostnames.
+- `adb_keepalive` / `adb_keepalive_interval`: keep in-use wireless ADB transports alive with a light ping (default on, every 20 seconds).
 - `device`: optional preferred Android device id.
 - `provider`, `default_model`, `api_base`: plugin-local model provider, model name, and API endpoint for Android Control task execution.
 - `model_supports_vision` / `vision_mode`: controls whether screenshots can be used by the task loop and how vision should be handled.
 - `max_steps`, `step_delay`, `stuck_threshold`, `max_elements`, `auto_intervene`: task loop limits and safety controls.
+
+## Connection Reliability
+
+Android Control keeps the ADB connection fast and self-healing:
+
+- The selected ADB server (host bridge or container-local) is cached and only re-probed when it actually fails, so a single slow probe can no longer silently switch to a server that cannot see your phone.
+- Device lists are cached for a couple of seconds and Tailscale discovery refreshes in the background, so each tap or swipe runs one ADB command instead of five or six.
+- When a command fails because the transport dropped (wireless debugging went idle, the phone changed its Wireless debugging port, or the transport went `offline`), Android Control reconnects using the live mDNS port or the last known endpoint and retries the command once. The agent sees the successful result instead of spending tool calls reconnecting.
+- Known wireless endpoints are remembered in `data/known_devices.json`.
 
 ## Tailscale Notes
 

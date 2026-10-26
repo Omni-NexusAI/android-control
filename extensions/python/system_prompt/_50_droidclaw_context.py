@@ -1,10 +1,11 @@
-import subprocess
-import os
+import asyncio
 import logging
+import os
+import time
 
 from helpers.extension import Extension
 from helpers import plugins
-from usr.plugins.droidclaw.helpers.adb_backend import adb_cmd
+from usr.plugins.droidclaw.helpers.adb_backend import canonical_devices, run_adb_async
 
 logger = logging.getLogger("droidclaw")
 
@@ -35,58 +36,58 @@ def _load_config() -> dict:
         return {}
 
 
-def _get_connected_devices():
+_PROPS_CACHE: dict[tuple[str, str], str] = {}
+_FOREGROUND_CACHE: dict[str, tuple[float, str]] = {}
+_FOREGROUND_TTL = 5.0
+
+
+async def _get_connected_devices():
     try:
-        result = subprocess.run(
-            adb_cmd(["devices"]),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        lines = result.stdout.strip().split("\n")
-        devices = []
-        for line in lines[1:]:
-            parts = line.strip().split("\t")
-            if len(parts) >= 2 and parts[1] == "device":
-                devices.append(parts[0])
-        return devices
+        devices = await asyncio.to_thread(canonical_devices)
+        return [d.serial for d in devices]
     except Exception:
         return []
 
 
-def _get_device_property(serial, prop):
+async def _get_device_property(serial, prop):
+    # Build/model properties never change for a connected device: cache them.
+    key = (serial, prop)
+    if key in _PROPS_CACHE:
+        return _PROPS_CACHE[key]
     try:
-        result = subprocess.run(
-            adb_cmd(["shell", "getprop", prop], device=serial),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.stdout.strip()
+        result = await run_adb_async(["shell", "getprop", prop], device=serial, timeout=5)
+        value = result["stdout"].strip() if result["returncode"] == 0 else ""
     except Exception:
-        return ""
+        value = ""
+    if value:
+        _PROPS_CACHE[key] = value
+    return value
 
 
-def _get_foreground_app(serial):
+async def _get_foreground_app(serial):
+    cached = _FOREGROUND_CACHE.get(serial)
+    if cached and time.monotonic() - cached[0] < _FOREGROUND_TTL:
+        return cached[1]
+    value = "unknown"
     try:
-        result = subprocess.run(
-            adb_cmd(["shell", "dumpsys activity activities"], device=serial),
-            capture_output=True,
-            text=True,
+        result = await run_adb_async(
+            ["shell", "dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity'"],
+            device=serial,
             timeout=5,
         )
-        for line in result.stdout.split("\n"):
-            if "mResumedActivity" in line:
+        for line in result["stdout"].split("\n"):
+            if "ResumedActivity" in line:
                 parts = line.strip().split()
-                for part in parts:
-                    if "/" in part and not part.startswith("Activity"):
-                        return part
-                for part in reversed(parts):
-                    if "." in part and "Activity" not in part:
-                        return part.strip("}")
-        return "unknown"
+                found = next((p for p in parts if "/" in p and not p.startswith("Activity")), "")
+                if not found:
+                    found = next((p.strip("}") for p in reversed(parts) if "." in p and "Activity" not in p), "")
+                if found:
+                    value = found
+                    break
     except Exception:
-        return "unknown"
+        pass
+    _FOREGROUND_CACHE[serial] = (time.monotonic(), value)
+    return value
 
 
 def _load_navigation_guide():
@@ -143,7 +144,7 @@ def _build_config_block(cfg):
 
 
 class DroidClawContext(Extension):
-    def execute(self, **kwargs):
+    async def execute(self, **kwargs):
         system_prompt = kwargs.get("system_prompt")
         if system_prompt is None:
             return
@@ -151,7 +152,7 @@ class DroidClawContext(Extension):
         try:
             cfg = _load_config()
             config_block = _build_config_block(cfg)
-            devices = _get_connected_devices()
+            devices = await _get_connected_devices()
 
             if not devices:
                 injection = (
@@ -173,10 +174,12 @@ class DroidClawContext(Extension):
                         serial = d
                         break
 
-            model = _get_device_property(serial, "ro.product.model")
-            android_ver = _get_device_property(serial, "ro.build.version.release")
-            sdk_ver = _get_device_property(serial, "ro.build.version.sdk")
-            foreground = _get_foreground_app(serial)
+            model, android_ver, sdk_ver, foreground = await asyncio.gather(
+                _get_device_property(serial, "ro.product.model"),
+                _get_device_property(serial, "ro.build.version.release"),
+                _get_device_property(serial, "ro.build.version.sdk"),
+                _get_foreground_app(serial),
+            )
             guide = _load_navigation_guide()
 
             device_info = (

@@ -3,11 +3,11 @@
 import logging
 import os
 import re
-import subprocess
+import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 
-from usr.plugins.droidclaw.helpers.adb_backend import adb_cmd, resolve_device
+from usr.plugins.droidclaw.helpers.adb_backend import run_adb_result
 
 logger = logging.getLogger('droidclaw')
 
@@ -70,8 +70,8 @@ def _parse_bounds(bounds_str: str) -> list[int]:
 def dump_ui(device: str = None) -> list[dict]:
     """Get UI elements from device via uiautomator dump.
 
-    Dumps UI hierarchy to /sdcard/window_dump.xml on the device,
-    pulls it locally, parses it, and cleans up.
+    Dumps the UI hierarchy on the device, streams it back over ``exec-out``
+    when possible (one round-trip, no temp files) and parses it.
 
     Args:
         device: Optional ADB device serial. If None, uses default device.
@@ -79,88 +79,66 @@ def dump_ui(device: str = None) -> list[dict]:
     Returns:
         List of element dicts parsed from the UI dump.
     """
-    resolution = resolve_device(device if device is not None else "")
-    if not resolution.get("resolved_device"):
-        logger.error("ADB device not connected: %s", device or "auto")
+    xml_content = dump_ui_xml(device)
+    if not xml_content:
         return []
-    adb_prefix = adb_cmd([], device=resolution["resolved_device"])
-
-    remote_path = '/sdcard/window_dump.xml'
-
-    # Dump UI hierarchy on device
-    dump_cmd = adb_prefix + ['shell', 'uiautomator', 'dump', remote_path]
-    try:
-        result = subprocess.run(dump_cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            logger.warning("uiautomator dump failed: %s", result.stderr)
-            # Try with compressed flag
-            dump_cmd = adb_prefix + ['shell', 'uiautomator', 'dump', '--compressed', remote_path]
-            result = subprocess.run(dump_cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                logger.error("uiautomator dump failed (compressed): %s", result.stderr)
-                return []
-    except subprocess.TimeoutExpired:
-        logger.error("uiautomator dump timed out")
-        return []
-    except FileNotFoundError:
-        logger.error("ADB client is unavailable; check Android Control dependency diagnostics")
-        return []
-
-    # Pull the dump file to a temp location
-    tmp_dir = tempfile.mkdtemp(prefix='droidclaw_')
-    local_path = os.path.join(tmp_dir, 'window_dump.xml')
-
-    pull_cmd = adb_prefix + ['pull', remote_path, local_path]
-    try:
-        result = subprocess.run(pull_cmd, capture_output=True, text=True, timeout=15)
-        if result.returncode != 0:
-            logger.error("adb pull failed: %s", result.stderr)
-            _cleanup(tmp_dir, adb_prefix, remote_path)
-            return []
-    except subprocess.TimeoutExpired:
-        logger.error("adb pull timed out")
-        _cleanup(tmp_dir, adb_prefix, remote_path)
-        return []
-
-    # Read and parse the file
-    try:
-        with open(local_path, 'r', encoding='utf-8') as f:
-            xml_content = f.read()
-    except (OSError, IOError) as e:
-        logger.error("Failed to read dump file: %s", e)
-        _cleanup(tmp_dir, adb_prefix, remote_path)
-        return []
-
     elements = parse_ui_xml(xml_content)
-
-    # Cleanup
-    _cleanup(tmp_dir, adb_prefix, remote_path)
-
     logger.debug("Parsed %d UI elements", len(elements))
     return elements
 
 
-def _cleanup(tmp_dir: str, adb_prefix: list, remote_path: str):
-    """Clean up temp files and remote dump file.
+def dump_ui_xml(device: str = None) -> str:
+    """Return the raw uiautomator XML for ``device`` ('' on failure)."""
+    target = device if device is not None else ""
+    remote_path = '/sdcard/window_dump.xml'
 
-    Args:
-        tmp_dir: Local temp directory to remove.
-        adb_prefix: ADB command prefix for device commands.
-        remote_path: Remote file path to delete from device.
-    """
-    # Remove local temp file
-    try:
-        import shutil
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    except Exception:
-        pass
+    # Fast path: dump straight to stdout (Android 7+), no pull round-trip.
+    result = run_adb_result(
+        ['exec-out', 'uiautomator', 'dump', '/dev/tty'], device=target, timeout=30
+    )
+    xml_content = _extract_xml(result.get('stdout') or '') if result['returncode'] == 0 else ''
+    if xml_content:
+        return xml_content
 
-    # Remove remote file
-    rm_cmd = adb_prefix + ['shell', 'rm', '-f', remote_path]
-    try:
-        subprocess.run(rm_cmd, capture_output=True, text=True, timeout=10)
-    except Exception:
-        pass
+    for flags in ([], ['--compressed']):
+        result = run_adb_result(
+            ['shell', 'uiautomator', 'dump', *flags, remote_path], device=target, timeout=30
+        )
+        if result['returncode'] == 0:
+            break
+        logger.warning("uiautomator dump failed %s: %s", flags or '', result['output'])
+    else:
+        return ''
+
+    result = run_adb_result(['exec-out', 'cat', remote_path], device=target, timeout=15)
+    xml_content = _extract_xml(result.get('stdout') or '') if result['returncode'] == 0 else ''
+    if not xml_content:
+        tmp_dir = tempfile.mkdtemp(prefix='droidclaw_')
+        local_path = os.path.join(tmp_dir, 'window_dump.xml')
+        try:
+            pulled = run_adb_result(['pull', remote_path, local_path], device=target, timeout=15)
+            if pulled['returncode'] == 0:
+                with open(local_path, 'r', encoding='utf-8') as f:
+                    xml_content = f.read()
+            else:
+                logger.error("adb pull failed: %s", pulled['output'])
+        except (OSError, IOError) as e:
+            logger.error("Failed to read dump file: %s", e)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    run_adb_result(['shell', 'rm', '-f', remote_path], device=target, timeout=10, recover=False)
+    return xml_content
+
+
+def _extract_xml(output: str) -> str:
+    """Pull the <hierarchy> document out of mixed uiautomator output."""
+    start = output.find('<?xml')
+    if start < 0:
+        start = output.find('<hierarchy')
+    end = output.rfind('</hierarchy>')
+    if start < 0 or end < 0:
+        return ''
+    return output[start:end + len('</hierarchy>')]
 
 
 def find_element(
