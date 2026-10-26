@@ -70,6 +70,14 @@ class ApiHandler:
         self.thread_lock = thread_lock
 
 
+class FlaskLikeResponse:
+    def __init__(self, response=None, status=200, mimetype=None, headers=None, **kwargs):
+        self.response = response
+        self.status = status
+        self.mimetype = mimetype
+        self.headers = dict(headers or {})
+
+
 class PrintStyle:
     @staticmethod
     def warning(*a, **k):
@@ -85,7 +93,7 @@ helpers_pkg.__path__ = []
 helpers_pkg.plugins = _module("helpers.plugins", get_plugin_config=get_plugin_config)
 helpers_pkg.tool = _module("helpers.tool", Tool=Tool, Response=Response)
 helpers_pkg.extension = _module("helpers.extension", Extension=Extension)
-helpers_pkg.api = _module("helpers.api", ApiHandler=ApiHandler, Request=object, Response=Response)
+helpers_pkg.api = _module("helpers.api", ApiHandler=ApiHandler, Request=object, Response=FlaskLikeResponse)
 helpers_pkg.print_style = _module("helpers.print_style", PrintStyle=PrintStyle)
 
 usr = _module("usr")

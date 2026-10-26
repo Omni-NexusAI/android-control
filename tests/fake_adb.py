@@ -33,8 +33,9 @@ def main(argv):
         fcntl.flock(fh, fcntl.LOCK_EX)
         state = _load(fh)
         rc, out, err, binary = run(state, argv)
+        hold = state.pop("_hold", 0)
         _save(fh, state)
-    delay = state.get("delay", 0)
+    delay = state.get("delay", 0) + hold
     if delay:
         time.sleep(delay)
     if binary is not None:
@@ -133,6 +134,10 @@ def run(state, argv):
         if content is None:
             return 1, "", f"cat: {args[2]}: No such file or directory\n", None
         return 0, content, "", None
+    if cmd == "shell" and any("app_process" in a for a in args):
+        # A long-running device-side server (scrcpy): stay alive a while.
+        state["_hold"] = state.get("app_process_seconds", 4)
+        return 0, "[server] INFO: Device: fake\n", "", None
     if cmd in ("shell", "exec-out"):
         text = " ".join(args[1:])
         outputs = state.get("shell_outputs", {})

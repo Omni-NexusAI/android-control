@@ -1,5 +1,8 @@
 """Capture screenshot from device and return image path."""
 
+import asyncio
+import base64
+import io
 import logging
 import os
 import re
@@ -30,6 +33,20 @@ def _prune_panel_frames(directory: str, keep: str) -> None:
         pass
 
 
+def _jpeg_data_url(png: bytes, max_edge: int, quality: int) -> tuple[str, int, int]:
+    from PIL import Image
+
+    with Image.open(io.BytesIO(png)) as img:
+        width, height = img.size
+        frame = img.convert("RGB")
+    scale = min(1.0, max(64, max_edge) / max(width, height))
+    if scale < 1.0:
+        frame = frame.resize((int(width * scale), int(height * scale)), Image.BILINEAR)
+    out = io.BytesIO()
+    frame.save(out, format="JPEG", quality=max(30, min(quality, 95)))
+    return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode("ascii"), width, height
+
+
 class Screenshot(ApiHandler):
     async def process(self, input: dict, request: Request) -> dict:
         device = input.get("device", None)
@@ -58,6 +75,24 @@ class Screenshot(ApiHandler):
                 "resolved_device": result.get("resolved_device") or "",
                 "device_resolution": result.get("device_resolution"),
                 "adb_backend": result.get("backend"),
+            }
+
+        if input.get("inline"):
+            # One round-trip for live previews: a downscaled JPEG data URL,
+            # nothing written to disk.
+            try:
+                data_url, width, height = await asyncio.to_thread(
+                    _jpeg_data_url, result["stdout"], int(input.get("max_edge") or 1024), int(input.get("quality") or 70)
+                )
+            except Exception as e:
+                return {"success": False, "message": f"Could not encode preview: {e}"}
+            return {
+                "success": True,
+                "data_url": data_url,
+                "width": width,
+                "height": height,
+                "resolved_device": result["resolved_device"],
+                "recovered": result.get("recovered", False),
             }
 
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)

@@ -25,3 +25,6 @@ tailscale_preferred_peers: []
 tailscale_cache_ttl: 30
 tailscale_adb_port: 5555
 tailscale_online_only: true
+preview_fps: 30
+preview_max_size: 1024
+preview_bit_rate: 4000000

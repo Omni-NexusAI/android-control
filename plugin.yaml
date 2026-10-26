@@ -65,6 +65,15 @@ config_schema:
       max_elements:
         type: integer
         description: Maximum UI elements to parse
+      preview_fps:
+        type: integer
+        description: Default live preview frame rate (12, 24, 30, 40 or 60)
+      preview_max_size:
+        type: integer
+        description: Longest edge in pixels of the live preview stream
+      preview_bit_rate:
+        type: integer
+        description: Live preview H.264 bit rate in bits per second
       auto_intervene:
         type: boolean
         description: Monitor and intervene when stuck

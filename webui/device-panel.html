@@ -48,11 +48,29 @@
   </div>
 
   <div class="dc-section dc-preview-section">
-    <div class="dc-section-title">Screen Preview <span id="dc-live-badge" class="dc-live-badge" style="display:none;">&#x25CF; Live</span></div>
-    <div class="dc-preview-container">
-      <img id="dc-screenshot-img" class="dc-preview-img" src="" alt="No screenshot" />
-      <button class="dc-btn dc-btn-small dc-preview-refresh" onclick="dcScreenshot()">&#x1F504; Refresh</button>
+    <div class="dc-section-title">Screen Preview <span id="dc-live-badge" class="dc-live-badge" style="display:none;">&#x25CF; Live</span>
+      <span id="dc-viewer-status" class="dc-viewer-status"></span></div>
+    <div class="dc-preview-toolbar">
+      <label class="dc-fps-label">FPS
+        <select id="dc-fps-select" onchange="dcSetPreviewFps(this.value)" aria-label="Preview frame rate">
+          <option value="off">Off</option>
+          <option value="12">12</option>
+          <option value="24">24</option>
+          <option value="30">30</option>
+          <option value="40">40</option>
+          <option value="60">60</option>
+        </select>
+      </label>
+      <div class="dc-nav-keys">
+        <button class="dc-btn dc-btn-small" onclick="dcPreviewKey('back')" title="Back">&#x25C0;</button>
+        <button class="dc-btn dc-btn-small" onclick="dcPreviewKey('home')" title="Home">&#x25CF;</button>
+        <button class="dc-btn dc-btn-small" onclick="dcPreviewKey('recents')" title="Recent apps">&#x25A0;</button>
+      </div>
     </div>
+    <div class="dc-preview-container" id="dc-viewer">
+      <div id="dc-viewer-placeholder" class="dc-empty-state">Preview off</div>
+    </div>
+    <div class="dc-preview-hint">Click to tap, hold to long-press, drag to swipe.</div>
   </div>
 
   <div class="dc-section">
@@ -164,9 +182,15 @@
   justify-content: center;
   border: 1px solid #0f3460;
 }
-.dc-preview-img { max-width: 100%; max-height: 500px; display: block; object-fit: contain; }
-.dc-preview-img[src=""] { display: none; }
-.dc-preview-refresh { position: absolute; top: 8px; right: 8px; background: rgba(15, 52, 96, 0.9); border: 1px solid #0f3460; }
+.dc-preview-container .dcv-canvas { width: 100%; height: 500px; display: block; object-fit: contain; cursor: crosshair; }
+.dc-preview-container .dcv-canvas.dcv-busy { cursor: progress; }
+.dc-preview-container:has(.dcv-canvas) #dc-viewer-placeholder { display: none; }
+.dc-preview-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
+.dc-fps-label { font-size: 11px; color: #888; display: flex; gap: 6px; align-items: center; }
+.dc-fps-label select { background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 6px; color: #e0e0e0; padding: 3px 6px; font-size: 12px; }
+.dc-nav-keys { display: flex; gap: 4px; }
+.dc-viewer-status { font-size: 10px; color: #777; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 8px; }
+.dc-preview-hint { font-size: 10px; color: #666; margin-top: 6px; text-align: center; }
 .dc-form { display: flex; flex-direction: column; gap: 10px; }
 .dc-form-group { display: flex; flex-direction: column; gap: 4px; }
 .dc-form-group label { font-size: 11px; color: #888; font-weight: 500; }
@@ -256,6 +280,7 @@
 .dc-task-state.queued { color: #f2c94c; }
 </style>
 
+<script src="/plugins/droidclaw/webui/droidclaw-viewer.js"></script>
 <script>
 (function() {
   var STORAGE_KEY = 'dc_current_device';
@@ -265,7 +290,6 @@
   var csrfToken = null;
   var csrfPromise = null;
   var dcDeviceRefreshTimer = null;
-  var dcAutoRefreshInterval = null;
   var dcTaskWatchTimer = null;
   var dcInitialized = false;
   var dcVisibilityHandler = null;
@@ -654,16 +678,17 @@
 
   window.dcScreenshot = function() {
     withDevice(function(d) {
-      document.getElementById('dc-task-status').textContent = 'Taking screenshot...';
+      var status = document.getElementById('dc-task-status');
+      status.textContent = 'Taking screenshot...';
       apiCall('screenshot', {device: d}).then(function(data) {
         if (data.success) {
-          document.getElementById('dc-screenshot-img').src = data.url + '&' + Date.now();
-          document.getElementById('dc-task-status').textContent = 'Screenshot captured (' + data.size_kb + ' KB)';
+          status.innerHTML = 'Screenshot saved (' + data.size_kb + ' KB): <a href="' + escHtml(data.url) +
+            '" target="_blank" rel="noopener">open</a>';
         } else {
-          document.getElementById('dc-task-status').textContent = 'Screenshot failed: ' + (data.message || 'unknown');
+          status.textContent = 'Screenshot failed: ' + (data.message || 'unknown');
         }
       }).catch(function(e) {
-        document.getElementById('dc-task-status').textContent = 'Screenshot failed: ' + e.message;
+        status.textContent = 'Screenshot failed: ' + e.message;
       });
     });
   };
@@ -1009,8 +1034,8 @@
     var match = (panelState.devices || []).filter(function(dev) { return dev.serial === serial; })[0] || {};
     setFocusPinned(serial, label, match.aliases || []);
     setConnected(serial, model);
-    dcStartAutoRefresh();
-    dcScreenshot();
+    if (dcViewer && dcViewer.running) dcViewer.start();
+    else dcStartAutoRefresh();
   };
 
   function dcInitializePanel() {
@@ -1035,42 +1060,69 @@
 
   whenPanelReady(dcInitializePanel);
 
-  // Auto-refresh screen preview
-  function dcStartAutoRefresh() {
-    if (dcAutoRefreshInterval) return;
-    var badge = document.getElementById('dc-live-badge');
-    if (badge) badge.style.display = 'inline';
-    dcAutoRefreshInterval = setInterval(function() {
-      var focus = getFocusState();
-      var dev = getActionDevice();
-      if (!dev && focus.mode !== 'auto') {
-        dcStopAutoRefresh();
-        return;
-      }
-      dcCaptureAutoRefresh(dev);
-    }, 5000);
+  // Live screen preview (droidclaw-viewer.js: H.264 stream, screenshot fallback)
+  var FPS_KEY = 'dc_preview_fps';
+  var dcViewer = null;
+
+  function previewFps() {
+    var stored = null;
+    try { stored = localStorage.getItem(FPS_KEY); } catch(e) {}
+    return stored || '30';
   }
 
-  function dcCaptureAutoRefresh(dev) {
-    apiCall('screenshot', {device: dev}).then(function(data) {
-      if (data.success) {
-        document.getElementById('dc-screenshot-img').src = data.url + '&' + Date.now();
-      }
-    }).catch(function() {});
+  function renderViewerStatus(st) {
+    var el = getEl('dc-viewer-status');
+    var badge = getEl('dc-live-badge');
+    if (!el) return;
+    var label = st.mode === 'stream' ? 'Live ' + st.fps + '/' + st.target + ' fps'
+      : st.mode === 'poll' ? 'Screenshots ' + st.fps + ' fps'
+      : st.mode === 'connecting' ? 'Connecting…' : '';
+    el.textContent = label + (st.message ? ' · ' + st.message : '');
+    if (badge) badge.style.display = (st.mode === 'stream' || st.mode === 'poll') ? 'inline' : 'none';
+  }
+
+  function dcStartAutoRefresh() {
+    var fps = previewFps();
+    var select = getEl('dc-fps-select');
+    if (select) select.value = fps;
+    if (fps === 'off') { dcStopAutoRefresh(); return; }
+    if (!window.DroidclawViewer) { setTimeout(dcStartAutoRefresh, 100); return; }
+    var container = getEl('dc-viewer');
+    if (!container) return;
+    if (!dcViewer || !container.contains(dcViewer.canvas)) {
+      if (dcViewer) dcViewer.destroy();
+      dcViewer = new window.DroidclawViewer(container, {
+        device: getActionDevice,
+        fps: Number(fps),
+        onStatus: renderViewerStatus
+      });
+    }
+    if (!dcViewer.running) dcViewer.start();
   }
 
   function dcStopAutoRefresh() {
-    if (dcAutoRefreshInterval) {
-      clearInterval(dcAutoRefreshInterval);
-      dcAutoRefreshInterval = null;
-    }
+    if (dcViewer) dcViewer.stop();
     var badge = document.getElementById('dc-live-badge');
     if (badge) badge.style.display = 'none';
   }
 
+  window.dcSetPreviewFps = function(value) {
+    try { localStorage.setItem(FPS_KEY, value); } catch(e) {}
+    if (value === 'off') { dcStopAutoRefresh(); return; }
+    if (dcViewer && dcViewer.running) dcViewer.setFps(Number(value));
+    else dcStartAutoRefresh();
+  };
+
+  window.dcPreviewKey = function(name) {
+    if (dcViewer) { dcViewer.key(name); return; }
+    var keycodes = {back: 'KEYCODE_BACK', home: 'KEYCODE_HOME', recents: 'KEYCODE_APP_SWITCH'};
+    withDevice(function(d) { runAdb(d, 'shell input keyevent ' + keycodes[name]); });
+  };
+
   // Cleanup auto-refresh on modal close
   window.__dcPanelCleanup = function() {
     dcStopAutoRefresh();
+    if (dcViewer) { dcViewer.destroy(); dcViewer = null; }
     if (dcDeviceRefreshTimer) { clearInterval(dcDeviceRefreshTimer); dcDeviceRefreshTimer = null; }
     if (dcTaskWatchTimer) { clearInterval(dcTaskWatchTimer); dcTaskWatchTimer = null; }
     if (dcWfPollTimer) { clearInterval(dcWfPollTimer); dcWfPollTimer = null; }

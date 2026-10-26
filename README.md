@@ -35,7 +35,7 @@ That can reduce the need to build or install a dedicated MCP for every service. 
 - Tailscale remote-device discovery with online or offline and ADB-ready status
 - Tailscale ADB connection over a tailnet with dynamic ADB port probing
 - Device selector with connected-device status
-- Control panel with quick actions, screenshots, task launch, and workflow controls
+- Control panel with quick actions, a live interactive 12-60 fps screen preview, task launch, and workflow record/replay
 - Direct ADB command API for focused actions
 - `droidclaw_run` autonomous task tool for multi-step Android workflows
 - System prompt context injection for connected Android device state
@@ -69,6 +69,14 @@ Android Control keeps the ADB connection fast and self-healing:
 - Device lists are cached for a couple of seconds and Tailscale discovery refreshes in the background, so each tap or swipe runs one ADB command instead of five or six.
 - When a command fails because the transport dropped (wireless debugging went idle, the phone changed its Wireless debugging port, or the transport went `offline`), Android Control reconnects using the live mDNS port or the last known endpoint and retries the command once. The agent sees the successful result instead of spending tool calls reconnecting.
 - Known wireless endpoints are remembered in `data/known_devices.json`.
+
+## Live Screen Preview (12-60 fps)
+
+- The panel preview streams the phone screen as H.264 video using [scrcpy-server](https://github.com/Genymobile/scrcpy) (Apache-2.0). Android Control downloads the pinned `scrcpy-server` v5.0.1 build once (about 730 KB, SHA-256 verified), pushes it to the phone, and decodes the video in the browser with WebCodecs.
+- Pick **12, 24, 30, 40 or 60 fps** (or **Off**) in the preview toolbar; `preview_fps`, `preview_max_size` and `preview_bit_rate` set the defaults.
+- One stream per phone is shared by every open viewer and stops automatically 15 seconds after the last viewer closes.
+- The preview is interactive: click to tap, hold to long-press, drag to swipe, plus Back / Home / Recents buttons. While a stream is live, input goes through scrcpy's control channel (lowest latency); otherwise through `adb shell input`. Input from the preview is captured by an active workflow recording.
+- If the browser lacks WebCodecs or the stream cannot start, the preview falls back to downscaled JPEG screenshots in a single request per frame (typically 1-5 fps, limited by the phone's screenshot speed).
 
 ## Vision
 
@@ -114,5 +122,4 @@ Android Control can drive several phones at the same time, for example one subor
 
 ## Planned Updates
 
-- Realtime framerate target selector for 12, 24, 30, 40, and 60 fps
 - Self-corrective tasking system to help a wider range of models complete complex Android tasks over time
