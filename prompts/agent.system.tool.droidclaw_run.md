@@ -27,3 +27,5 @@ usage:
 ~~~
 
 several phones at once: wrap one droidclaw_run per phone in the parallel tool, each with its own "device"; runs on different phones proceed concurrently and a phone already being driven by another agent is refused
+
+to make the run repeatable add "record_as": "<workflow name>"; a completed run is saved and can be replayed without an llm via droidclaw_workflow play

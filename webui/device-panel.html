@@ -62,6 +62,12 @@
         <label for="dc-goal">Goal</label>
         <input type="text" id="dc-goal" placeholder="Manually prompt agent task directly here" />
       </div>
+      <div class="dc-saved-prompts">
+        <select id="dc-saved-prompts" onchange="dcUseSavedPrompt(this.value)" aria-label="Saved prompts">
+          <option value="">Saved prompts&hellip;</option>
+        </select>
+        <button class="dc-btn dc-btn-small dc-btn-secondary" onclick="dcSavePrompt()" title="Save the goal text for reuse">Save prompt</button>
+      </div>
       <div class="dc-btn-row">
         <button class="dc-btn dc-btn-primary dc-btn-wide" id="dc-start-btn" onclick="dcStartTask()">&#x25B6; Start Task</button>
         <button class="dc-btn dc-btn-danger dc-btn-wide" id="dc-stop-btn" onclick="dcStopTask()" disabled>&#x25A0; Stop Task</button>
@@ -71,13 +77,17 @@
   </div>
 
   <div class="dc-section">
-    <div class="dc-section-title">Workflows</div>
+    <div class="dc-section-title">Workflows <span class="dc-section-hint">record once, replay without an LLM</span></div>
+    <div class="dc-wf-record">
+      <input type="text" id="dc-wf-name" placeholder="New workflow name" maxlength="60" />
+      <button class="dc-btn dc-btn-danger" id="dc-wf-record-btn" onclick="dcToggleRecording()">&#x25CF; Record</button>
+      <button class="dc-btn dc-btn-secondary" id="dc-wf-cancel-btn" onclick="dcCancelRecording()" style="display:none">Discard</button>
+    </div>
+    <div id="dc-wf-recording" class="dc-wf-recording" style="display:none"></div>
     <div id="dc-workflow-list" class="dc-workflow-list">
       <div class="dc-empty-state">No saved workflows</div>
     </div>
-    <div class="dc-btn-row">
-      <button class="dc-btn dc-btn-secondary" onclick="dcSaveWorkflow()">&#x1F4BE; Save Current</button>
-    </div>
+    <div id="dc-wf-status" class="dc-wf-status"></div>
   </div>
 </div>
 
@@ -183,6 +193,17 @@
 .dc-workflow-name { font-size: 12px; color: #e0e0e0; flex: 1; }
 .dc-workflow-actions { display: flex; gap: 4px; }
 .dc-empty-state { text-align: center; color: #555; font-size: 12px; padding: 12px; }
+.dc-section-hint { font-size: 10px; color: #666; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.dc-saved-prompts { display: flex; gap: 6px; align-items: center; }
+.dc-saved-prompts select, .dc-wf-record input { flex: 1; min-width: 0; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 6px; color: #e0e0e0; padding: 6px 8px; font-size: 12px; }
+.dc-wf-record { display: flex; gap: 6px; margin-bottom: 8px; }
+.dc-wf-recording { font-size: 12px; color: #ff6b6b; margin-bottom: 8px; }
+.dc-wf-recording::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff4d4d; margin-right: 6px; animation: dc-pulse 1s infinite; }
+@keyframes dc-pulse { 50% { opacity: 0.3; } }
+.dc-workflow-meta { font-size: 10px; color: #777; margin-left: 6px; }
+.dc-wf-status { font-size: 11px; color: #aaa; white-space: pre-wrap; max-height: 160px; overflow-y: auto; }
+.dc-wf-status .ok { color: #4caf50; }
+.dc-wf-status .fail { color: #ff6b6b; }
 .dc-top-row { display: flex; gap: 12px; }
 .dc-top-row .dc-section { flex: 1; min-width: 0; }
 .dc-live-badge { font-size: 10px; color: #4caf50; font-weight: 600; text-transform: none; letter-spacing: 0; vertical-align: middle; margin-left: 6px; animation: dc-pulse 1.5s infinite; }
@@ -728,45 +749,164 @@
     getEl('dc-stop-btn').disabled = true;
   };
 
-  window.dcSaveWorkflow = function() {
-    var goal = document.getElementById('dc-goal').value.trim();
-    if (!goal) { alert('Enter a goal first'); return; }
-    var workflows = JSON.parse(localStorage.getItem('dc-workflows') || '[]');
-    workflows.push({ name: goal.substring(0, 50), goal: goal });
-    localStorage.setItem('dc-workflows', JSON.stringify(workflows));
-    dcRenderWorkflows();
-  };
+  // ---- Saved prompts (goal text only; previously labelled "workflows") ----
+  var PROMPTS_KEY = 'dc-workflows';
 
-  function dcRenderWorkflows() {
-    var workflows = JSON.parse(localStorage.getItem('dc-workflows') || '[]');
-    var list = document.getElementById('dc-workflow-list');
-    if (workflows.length === 0) {
-      list.innerHTML = '<div class="dc-empty-state">No saved workflows</div>';
-      return;
-    }
-    list.innerHTML = workflows.map(function(wf, i) {
-      return '<div class="dc-workflow-item">' +
-        '<span class="dc-workflow-name">' + wf.name + '</span>' +
-        '<div class="dc-workflow-actions">' +
-          '<button class="dc-btn dc-btn-small dc-btn-primary" onclick="dcRunWorkflow(' + i + ')">Run</button>' +
-          '<button class="dc-btn dc-btn-small dc-btn-danger" onclick="dcDeleteWorkflow(' + i + ')">Del</button>' +
-        '</div></div>';
+  function loadPrompts() { return loadJson(PROMPTS_KEY, []) || []; }
+
+  function dcRenderSavedPrompts() {
+    var select = getEl('dc-saved-prompts');
+    if (!select) return;
+    var prompts = loadPrompts();
+    select.innerHTML = '<option value="">Saved prompts&hellip;</option>' + prompts.map(function(p, i) {
+      return '<option value="' + i + '">' + escHtml(p.name) + '</option>';
     }).join('');
   }
 
-  window.dcRunWorkflow = function(i) {
-    var workflows = JSON.parse(localStorage.getItem('dc-workflows') || '[]');
-    var wf = workflows[i];
-    if (!wf) return;
-    document.getElementById('dc-goal').value = wf.goal;
-    dcStartTask();
+  window.dcSavePrompt = function() {
+    var goal = getEl('dc-goal').value.trim();
+    if (!goal) { setWfStatus('Enter a goal first, then save it as a prompt.'); return; }
+    var prompts = loadPrompts();
+    prompts.push({ name: goal.substring(0, 50), goal: goal });
+    saveJson(PROMPTS_KEY, prompts);
+    dcRenderSavedPrompts();
   };
 
-  window.dcDeleteWorkflow = function(i) {
-    var workflows = JSON.parse(localStorage.getItem('dc-workflows') || '[]');
-    workflows.splice(i, 1);
-    localStorage.setItem('dc-workflows', JSON.stringify(workflows));
-    dcRenderWorkflows();
+  window.dcUseSavedPrompt = function(index) {
+    var p = loadPrompts()[Number(index)];
+    if (p) getEl('dc-goal').value = p.goal;
+  };
+
+  // ---- Recorded workflows (server-side, replayed without an LLM) ----
+  var dcWfPollTimer = null;
+  var dcWfRunTimer = null;
+
+  function setWfStatus(html) {
+    var box = getEl('dc-wf-status');
+    if (box) box.innerHTML = html;
+  }
+
+  function activeRecording(recordings) {
+    var dev = getActionDevice();
+    for (var i = 0; i < (recordings || []).length; i++) {
+      if (!dev || recordings[i].device === dev) return recordings[i];
+    }
+    return null;
+  }
+
+  function renderRecording(rec) {
+    var btn = getEl('dc-wf-record-btn');
+    var cancel = getEl('dc-wf-cancel-btn');
+    var banner = getEl('dc-wf-recording');
+    var name = getEl('dc-wf-name');
+    if (!btn) return;
+    if (rec) {
+      btn.innerHTML = '&#x25A0; Stop &amp; Save';
+      cancel.style.display = '';
+      banner.style.display = '';
+      banner.textContent = 'Recording "' + rec.name + '" on ' + rec.device + ': ' + rec.steps + ' step' + (rec.steps === 1 ? '' : 's') +
+        '. Use the quick actions, the preview or ask the agent; every input is captured.';
+      name.disabled = true;
+      name.value = rec.name;
+      if (!dcWfPollTimer) dcWfPollTimer = setInterval(dcLoadWorkflows, 2000);
+    } else {
+      btn.innerHTML = '&#x25CF; Record';
+      cancel.style.display = 'none';
+      banner.style.display = 'none';
+      name.disabled = false;
+      if (dcWfPollTimer) { clearInterval(dcWfPollTimer); dcWfPollTimer = null; }
+    }
+  }
+
+  window.dcLoadWorkflows = function() {
+    return apiCall('workflows', {action: 'list'}).then(function(data) {
+      var list = getEl('dc-workflow-list');
+      if (!list || !data) return;
+      renderRecording(activeRecording(data.recordings));
+      var items = data.workflows || [];
+      if (!items.length) {
+        list.innerHTML = '<div class="dc-empty-state">No recorded workflows yet</div>';
+        return;
+      }
+      list.innerHTML = items.map(function(wf) {
+        var n = escHtml(JSON.stringify(wf.name));
+        return '<div class="dc-workflow-item">' +
+          '<span class="dc-workflow-name" title="' + escHtml(wf.description || '') + '">' + escHtml(wf.name) +
+          '<span class="dc-workflow-meta">' + wf.steps + ' steps</span></span>' +
+          '<div class="dc-workflow-actions">' +
+            '<button class="dc-btn dc-btn-small dc-btn-primary" onclick="dcPlayWorkflow(' + n + ')">&#x25B6; Play</button>' +
+            '<button class="dc-btn dc-btn-small dc-btn-secondary" onclick="dcShowWorkflow(' + n + ')">Steps</button>' +
+            '<button class="dc-btn dc-btn-small dc-btn-danger" onclick="dcDeleteWorkflow(' + n + ')">Del</button>' +
+          '</div></div>';
+      }).join('');
+    }).catch(function() {});
+  };
+
+  window.dcToggleRecording = function() {
+    var dev = getActionDevice();
+    var nameEl = getEl('dc-wf-name');
+    if (nameEl.disabled) {
+      apiCall('workflows', {action: 'record_stop', device: dev}).then(function(data) {
+        setWfStatus(escHtml(data.message || ''));
+        nameEl.value = '';
+        dcLoadWorkflows();
+      });
+      return;
+    }
+    var name = nameEl.value.trim();
+    if (!name) { setWfStatus('Name the workflow first.'); nameEl.focus(); return; }
+    apiCall('workflows', {action: 'record_start', device: dev, name: name}).then(function(data) {
+      setWfStatus(escHtml(data.message || ''));
+      dcLoadWorkflows();
+    });
+  };
+
+  window.dcCancelRecording = function() {
+    apiCall('workflows', {action: 'record_cancel', device: getActionDevice()}).then(function(data) {
+      setWfStatus(escHtml(data.message || ''));
+      getEl('dc-wf-name').value = '';
+      dcLoadWorkflows();
+    });
+  };
+
+  function renderRun(run) {
+    var lines = ['<b>' + escHtml(run.name) + '</b> on ' + escHtml(run.device) + ': ' + escHtml(run.status) +
+      ' (' + run.current + '/' + run.total + ')' + (run.message ? ' &mdash; ' + escHtml(run.message) : '')];
+    (run.results || []).forEach(function(r) {
+      lines.push('<span class="' + (r.ok ? 'ok' : 'fail') + '">' + r.step + '. ' + escHtml(r.action) + ' &mdash; ' +
+        (r.ok ? 'ok' : 'failed') + ': ' + escHtml(r.detail) + '</span>');
+    });
+    setWfStatus(lines.join('\n'));
+  }
+
+  window.dcPlayWorkflow = function(name) {
+    if (dcWfRunTimer) { clearInterval(dcWfRunTimer); dcWfRunTimer = null; }
+    setWfStatus('Starting "' + escHtml(name) + '"&hellip;');
+    apiCall('workflows', {action: 'play', name: name, device: getActionDevice()}).then(function(data) {
+      if (!data.success) { setWfStatus('<span class="fail">' + escHtml(data.message || 'Could not start') + '</span>'); return; }
+      dcWfRunTimer = setInterval(function() {
+        apiCall('workflows', {action: 'run_status', run_id: data.run_id}).then(function(st) {
+          if (!st.run) return;
+          renderRun(st.run);
+          if (st.run.status !== 'running') { clearInterval(dcWfRunTimer); dcWfRunTimer = null; }
+        }).catch(function() {});
+      }, 700);
+    });
+  };
+
+  window.dcShowWorkflow = function(name) {
+    apiCall('workflows', {action: 'show', name: name}).then(function(data) {
+      if (!data.success) { setWfStatus(escHtml(data.message || '')); return; }
+      setWfStatus('<b>' + escHtml(name) + '</b>\n' + data.steps.map(function(s, i) { return (i + 1) + '. ' + escHtml(s); }).join('\n'));
+    });
+  };
+
+  window.dcDeleteWorkflow = function(name) {
+    if (!window.confirm('Delete workflow "' + name + '"?')) return;
+    apiCall('workflows', {action: 'delete', name: name}).then(function(data) {
+      setWfStatus(escHtml(data.message || ''));
+      dcLoadWorkflows();
+    });
   };
 
   window.dcLoadDevices = function() {
@@ -878,7 +1018,8 @@
     dcInitialized = true;
     restorePanelState();
     renderTaskState(loadJson(TASK_STATE_KEY, {}));
-    dcRenderWorkflows();
+    dcRenderSavedPrompts();
+    dcLoadWorkflows();
     dcLoadDevices();
     dcDeviceRefreshTimer = setInterval(function() { dcLoadDevices(); }, 10000);
     dcTaskWatchTimer = setInterval(watchTaskState, 1500);
@@ -932,6 +1073,8 @@
     dcStopAutoRefresh();
     if (dcDeviceRefreshTimer) { clearInterval(dcDeviceRefreshTimer); dcDeviceRefreshTimer = null; }
     if (dcTaskWatchTimer) { clearInterval(dcTaskWatchTimer); dcTaskWatchTimer = null; }
+    if (dcWfPollTimer) { clearInterval(dcWfPollTimer); dcWfPollTimer = null; }
+    if (dcWfRunTimer) { clearInterval(dcWfRunTimer); dcWfRunTimer = null; }
     if (dcVisibilityHandler) { document.removeEventListener('visibilitychange', dcVisibilityHandler); dcVisibilityHandler = null; }
     if (dcFocusHandler) { window.removeEventListener('focus', dcFocusHandler); dcFocusHandler = null; }
     dcInitialized = false;
