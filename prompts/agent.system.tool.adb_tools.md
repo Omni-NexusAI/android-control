@@ -1,5 +1,6 @@
 ### adb_tools
 
+"device": serial of the phone to act on; leave empty to use the phone selected with adb_device select (required when several phones are connected and none is selected)
 direct android device control via adb for single atomic actions
 actions: tap longpress swipe type press launch home back enter shell screenshot screen_dump
 use for individual precise interactions when you know exactly what to do

@@ -6,6 +6,7 @@ import time
 from helpers.extension import Extension
 from helpers import plugins
 from usr.plugins.droidclaw.helpers.adb_backend import canonical_devices, run_adb_async
+from usr.plugins.droidclaw.helpers.device_context import bound_device, lease_table
 
 logger = logging.getLogger("droidclaw")
 
@@ -166,30 +167,50 @@ class DroidClawContext(Extension):
                 system_prompt.append(injection)
                 return
 
-            serial = devices[0]
+            bound = bound_device(self.agent)
             configured_device = cfg.get("device", "")
-            if configured_device:
-                for d in devices:
-                    if configured_device in d:
-                        serial = d
-                        break
+            focus = ""
+            for candidate in (bound, configured_device):
+                if candidate and not focus:
+                    focus = next((d for d in devices if candidate == d or candidate in d), "")
+            if not focus and len(devices) == 1:
+                focus = devices[0]
 
-            model, android_ver, sdk_ver, foreground = await asyncio.gather(
-                _get_device_property(serial, "ro.product.model"),
-                _get_device_property(serial, "ro.build.version.release"),
-                _get_device_property(serial, "ro.build.version.sdk"),
-                _get_foreground_app(serial),
-            )
+            leases = lease_table()
+            device_lines = []
+            for d in devices:
+                model = await _get_device_property(d, "ro.product.model")
+                notes = [model] if model else []
+                if d == focus and bound:
+                    notes.append("bound to you")
+                if d in leases:
+                    notes.append(f"in use by {leases[d]['holder']}")
+                device_lines.append(f"- {d}" + (f" ({', '.join(notes)})" if notes else ""))
+
+            if focus:
+                android_ver, sdk_ver, foreground = await asyncio.gather(
+                    _get_device_property(focus, "ro.build.version.release"),
+                    _get_device_property(focus, "ro.build.version.sdk"),
+                    _get_foreground_app(focus),
+                )
+                focus_block = (
+                    f"**Target Device**: {focus}{' (bound to this agent)' if bound else ''}\n"
+                    f"**Android**: {android_ver or 'unknown'} (SDK {sdk_ver or '?'})\n"
+                    f"**Foreground App**: {foreground}\n"
+                )
+            else:
+                focus_block = (
+                    "**Target Device**: none selected. Several phones are connected, so pass \"device\" "
+                    "on every Android Control call or bind once with adb_device action \"select\".\n"
+                )
             guide = _load_navigation_guide()
 
             device_info = (
                 "\n\n"
                 "---\n"
                 "## Android Control Device Context\n"
-                f"**Device Connected**: {serial}\n"
-                f"**Model**: {model or 'unknown'}\n"
-                f"**Android**: {android_ver or 'unknown'} (SDK {sdk_ver or '?'})\n"
-                f"**Foreground App**: {foreground}\n"
+                f"**Connected Devices ({len(devices)})**:\n" + "\n".join(device_lines) + "\n"
+                f"{focus_block}"
                 "**ADB Tools Available**: tap, swipe, type, keyevent, screencap, uiautomator dump\n"
                 "\n"
                 f"### {config_block}\n"

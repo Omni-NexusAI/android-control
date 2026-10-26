@@ -70,6 +70,15 @@ Android Control keeps the ADB connection fast and self-healing:
 - When a command fails because the transport dropped (wireless debugging went idle, the phone changed its Wireless debugging port, or the transport went `offline`), Android Control reconnects using the live mDNS port or the last known endpoint and retries the command once. The agent sees the successful result instead of spending tool calls reconnecting.
 - Known wireless endpoints are remembered in `data/known_devices.json`.
 
+## Multiple Phones
+
+Android Control can drive several phones at the same time, for example one subordinate agent per phone.
+
+- **Choosing a phone:** every Android Control tool uses, in order, the `device` argument, the phone the agent bound with `adb_device` action `select`, the configured default `device`, or the only connected phone. If several phones are connected and none of these applies, the tool returns the list of serials instead of guessing.
+- **No collisions:** a phone being driven by one agent is claimed for it; another agent gets a clear "in use by" message. Claims lapse automatically 90 seconds after the agent's last action, and actions from the panel are never blocked. Screen dumps and screenshots use unique per-device files, so concurrent agents never read each other's screens.
+- **Running in parallel:** use Agent Zero's `parallel` tool, with one `droidclaw_run` per phone (each with its own `device`), or one `call_subordinate` per phone whose message names the serial and tells the subordinate to `select` it first.
+- Two identical phone models stay separate devices; the same phone attached over USB and Wi-Fi is shown once.
+
 ## Tailscale Notes
 
 - Put the phone on the tailnet through the Tailscale Android app before using **Connect with Tailscale**.
@@ -87,5 +96,4 @@ Android Control keeps the ADB connection fast and self-healing:
 ## Planned Updates
 
 - Realtime framerate target selector for 12, 24, 30, 40, and 60 fps
-- Better parallelized multi-device controls
 - Self-corrective tasking system to help a wider range of models complete complex Android tasks over time

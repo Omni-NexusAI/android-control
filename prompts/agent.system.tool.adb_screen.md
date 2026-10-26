@@ -1,5 +1,6 @@
 ### adb_screen
 
+"device": serial of the phone to act on; leave empty to use the phone selected with adb_device select (required when several phones are connected and none is selected)
 read android screen state via adb uiautomator xml dump and or screenshot capture
 returns parsed ui element hierarchy with text bounds clickable state and resource ids
 use to understand what is currently displayed on the device before taking actions

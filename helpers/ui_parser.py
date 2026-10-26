@@ -8,6 +8,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from usr.plugins.droidclaw.helpers.adb_backend import run_adb_result
+from usr.plugins.droidclaw.helpers.device_context import remote_temp_path
 
 logger = logging.getLogger('droidclaw')
 
@@ -90,7 +91,7 @@ def dump_ui(device: str = None) -> list[dict]:
 def dump_ui_xml(device: str = None) -> str:
     """Return the raw uiautomator XML for ``device`` ('' on failure)."""
     target = device if device is not None else ""
-    remote_path = '/sdcard/window_dump.xml'
+    remote_path = remote_temp_path('dump', 'xml')
 
     # Fast path: dump straight to stdout (Android 7+), no pull round-trip.
     result = run_adb_result(

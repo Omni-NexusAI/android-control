@@ -22,7 +22,7 @@ def test_dump_ui_fast_path(fake_adb):
 
 def test_dump_ui_falls_back_to_file(fake_adb):
     fake_adb.add_device("S1")
-    fake_adb.state["files"] = {"*": {"/sdcard/window_dump.xml": XML}}
+    fake_adb.state["files"] = {"*": {"*droidclaw_dump_*": XML}}
     fake_adb.write()
     elements = ui_parser.dump_ui("S1")
     assert any(e["text"] == "Settings" for e in elements)
